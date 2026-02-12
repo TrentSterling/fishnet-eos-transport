@@ -53,7 +53,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         #region Types
 
-        public enum StepStatus { Pending, Running, Pass, Fail, Skipped }
+        public enum StepStatus { Pending, Running, Pass, Warning, Fail, Skipped }
 
         public class Step
         {
@@ -212,7 +212,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 sdkInit = EOSManager.Instance.IsInitialized;
                 if (!sdkInit)
                     return (StepStatus.Fail, "Not initialized (auto-init disabled or failed?)");
-                return (StepStatus.Pass, $"SDK v{EOSManager.Instance.Config?.SdkVersion ?? "?"}");
+                return (StepStatus.Pass, "Initialized");
             });
 
             // --- Step 4: EOS Logged In ---
@@ -715,6 +715,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             string hex = status switch
             {
                 StepStatus.Pass    => ColorUtility.ToHtmlStringRGB(Green),
+                StepStatus.Warning => ColorUtility.ToHtmlStringRGB(Yellow),
                 StepStatus.Running => ColorUtility.ToHtmlStringRGB(Yellow),
                 StepStatus.Fail    => ColorUtility.ToHtmlStringRGB(Red),
                 StepStatus.Skipped => ColorUtility.ToHtmlStringRGB(Gray),
@@ -728,6 +729,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             string hex = status switch
             {
                 StepStatus.Pass    => ColorUtility.ToHtmlStringRGB(Green),
+                StepStatus.Warning => ColorUtility.ToHtmlStringRGB(Yellow),
                 StepStatus.Running => ColorUtility.ToHtmlStringRGB(Yellow),
                 StepStatus.Fail    => ColorUtility.ToHtmlStringRGB(Red),
                 StepStatus.Skipped => ColorUtility.ToHtmlStringRGB(Gray),
