@@ -326,7 +326,7 @@ namespace FishNet.Transport.EOSNative.Editor
             var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
             ground.name = "Ground";
             ground.transform.localScale = new Vector3(5f, 1f, 5f);
-            var groundMat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+            var groundMat = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
             groundMat.color = new Color(0.3f, 0.35f, 0.3f);
             ground.GetComponent<Renderer>().material = groundMat;
 
@@ -382,7 +382,7 @@ namespace FishNet.Transport.EOSNative.Editor
             wall.transform.localScale = scale;
             wall.isStatic = true;
 
-            var wallMat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+            var wallMat = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
             wallMat.color = new Color(0.5f, 0.45f, 0.4f);
             wall.GetComponent<Renderer>().material = wallMat;
         }
