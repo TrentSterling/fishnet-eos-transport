@@ -282,18 +282,19 @@ namespace FishNet.Transport.EOSNative.Editor
             // NetworkManager + transport
             SetupScene();
 
-            // Crates
-            var cratePrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/EOSDemo/Prefabs/CratePrefab.prefab");
-            if (cratePrefab != null)
+            // Add runtime crate spawner (FishNet NetworkObjects must be server-spawned, not scene-placed)
+            var spawnerGo = new GameObject("DemoCrateSpawner");
+            var crateSpawner = spawnerGo.AddComponent<DemoCrateSpawner>();
+
+            // Wire crate prefab to spawner
+            string cratePath = "Assets/EOSDemo/Prefabs/CratePrefab.prefab";
+            var crateNob = AssetDatabase.LoadAssetAtPath<NetworkObject>(cratePath);
+            if (crateNob != null)
             {
-                for (int i = 0; i < 5; i++)
-                {
-                    float x = Random.Range(-8f, 8f);
-                    float z = Random.Range(-8f, 8f);
-                    var crate = (GameObject)PrefabUtility.InstantiatePrefab(cratePrefab);
-                    crate.transform.position = new Vector3(x, 1f, z);
-                    crate.name = $"Crate_{i}";
-                }
+                var so = new SerializedObject(crateSpawner);
+                so.FindProperty("_cratePrefab").objectReferenceValue = crateNob;
+                so.ApplyModifiedProperties();
+                EditorUtility.SetDirty(crateSpawner);
             }
 
             // Save
@@ -304,7 +305,7 @@ namespace FishNet.Transport.EOSNative.Editor
 
             Debug.Log($"[FishNet EOS] Demo scene created at {scenePath}");
             EditorUtility.DisplayDialog("Demo Scene Created",
-                $"Scene saved to: {scenePath}\n\nIncludes:\n  - NetworkManager + EOS transport\n  - Ground + walls\n  - SimpleCamera (follows player)\n  - 5 physics crates\n\nPress Play, then click Host in the Inspector!",
+                $"Scene saved to: {scenePath}\n\nIncludes:\n  - NetworkManager + EOS transport\n  - Ground + walls\n  - SimpleCamera (follows player)\n  - DemoCrateSpawner (spawns crates when hosting)\n\nPress Play, then click Host in the Inspector!",
                 "OK");
         }
 
