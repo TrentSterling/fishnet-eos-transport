@@ -644,17 +644,23 @@ namespace FishNet.Transport.EOSNative
                 }
             }
 
-            // 9. Auto-assign SampleEOSConfig if available and _eosConfig is null
+            // 9. Auto-assign EOSConfig if available and _eosConfig is null
             if (_eosConfig == null)
             {
+                // Try SampleEOSConfig first, then EOSConfig, then any EOSConfig asset
                 var guids = AssetDatabase.FindAssets("SampleEOSConfig t:EOSConfig");
+                if (guids.Length == 0)
+                    guids = AssetDatabase.FindAssets("EOSConfig t:EOSConfig");
+                if (guids.Length == 0)
+                    guids = AssetDatabase.FindAssets("t:EOSConfig");
+
                 if (guids.Length > 0)
                 {
                     var path = AssetDatabase.GUIDToAssetPath(guids[0]);
                     _eosConfig = AssetDatabase.LoadAssetAtPath<EOSConfig>(path);
                     if (_eosConfig != null)
                     {
-                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Auto-assigned {path}");
+                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"Auto-assigned config: {path}");
                         EditorUtility.SetDirty(this);
                     }
                 }
