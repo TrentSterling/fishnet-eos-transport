@@ -11,43 +11,41 @@ using FishNet.Transport.EOSNative.Migration;
 namespace FishNet.Transport.EOSNative.Editor
 {
     /// <summary>
-    /// Unified Tools/EOS menu. The eos-sdk package contributes "Setup Wizard" at priority -100.
-    /// This file contributes all FishNet-specific items under the same menu root.
+    /// Tools/FishNet EOS menu for FishNet transport setup and utilities.
+    /// Parallel structure to Tools/EOS SDK menu but FishNet-specific.
     /// </summary>
     public static class EOSNativeMenu
     {
-        private const string MenuRoot = "Tools/EOS/";
+        private const string MenuRoot = "Tools/FishNet EOS/";
 
         #region Scene Setup
 
         /// <summary>
-        /// Sets up the scene with all required EOS + FishNet components.
-        /// Creates EOSNativeTransport which triggers full auto-setup via Reset().
+        /// Sets up the scene with NetworkManager + EOSNativeTransport.
+        /// The transport's Reset() auto-setup adds EOSManager, lobbies, voice, etc.
         /// </summary>
         [MenuItem(MenuRoot + "Setup Scene", priority = 0)]
         public static void SetupScene()
         {
-            // Check if transport already exists
             var existingTransport = UnityEngine.Object.FindAnyObjectByType<EOSNativeTransport>();
             if (existingTransport != null)
             {
-                Debug.Log("[EOS] EOSNativeTransport already exists. Re-running AutoSetup...");
+                Debug.Log("[FishNet EOS] EOSNativeTransport already exists. Re-running AutoSetup...");
                 existingTransport.SendMessage("Reset", SendMessageOptions.DontRequireReceiver);
                 Selection.activeGameObject = existingTransport.gameObject;
                 EditorGUIUtility.PingObject(existingTransport.gameObject);
                 return;
             }
 
-            // Create new GameObject with transport — AutoSetup handles everything else
             var go = new GameObject("NetworkManager");
-            Undo.RegisterCreatedObjectUndo(go, "Setup EOS Scene");
+            Undo.RegisterCreatedObjectUndo(go, "Setup FishNet EOS Scene");
 
             go.AddComponent<EOSNativeTransport>();
 
             Selection.activeGameObject = go;
             EditorGUIUtility.PingObject(go);
 
-            Debug.Log("[EOS] Scene setup complete! NetworkManager created with EOS transport and all subsystems.");
+            Debug.Log("[FishNet EOS] Scene setup complete! NetworkManager created with EOS transport and all subsystems.");
         }
 
         [MenuItem(MenuRoot + "Setup Scene", true)]
@@ -55,73 +53,10 @@ namespace FishNet.Transport.EOSNative.Editor
 
         #endregion
 
-        #region Config
-
-        /// <summary>
-        /// Selects the EOSConfig asset in the Project window.
-        /// </summary>
-        [MenuItem(MenuRoot + "Select Config", priority = 1)]
-        public static void SelectConfig()
-        {
-            // Try SampleEOSConfig first, then any EOSConfig
-            var guids = AssetDatabase.FindAssets("SampleEOSConfig t:EOSConfig");
-            if (guids.Length == 0)
-                guids = AssetDatabase.FindAssets("EOSConfig t:EOSConfig");
-            if (guids.Length == 0)
-                guids = AssetDatabase.FindAssets("t:EOSConfig");
-
-            if (guids.Length > 0)
-            {
-                var path = AssetDatabase.GUIDToAssetPath(guids[0]);
-                var asset = AssetDatabase.LoadAssetAtPath<EOSConfig>(path);
-                if (asset != null)
-                {
-                    Selection.activeObject = asset;
-                    EditorGUIUtility.PingObject(asset);
-                    Debug.Log($"[EOS] Selected config: {path}");
-                    return;
-                }
-            }
-
-            // No config found — offer to create one
-            if (EditorUtility.DisplayDialog(
-                "EOSConfig Not Found",
-                "No EOSConfig asset found in the project.\n\nWould you like to create one?",
-                "Create Config",
-                "Cancel"))
-            {
-                CreateEOSConfig();
-            }
-        }
-
-        /// <summary>
-        /// Creates a new EOSConfig ScriptableObject asset.
-        /// </summary>
-        [MenuItem(MenuRoot + "Create New Config", priority = 2)]
-        public static void CreateEOSConfig()
-        {
-            var config = ScriptableObject.CreateInstance<EOSConfig>();
-
-            var directory = "Assets";
-            var path = AssetDatabase.GenerateUniqueAssetPath($"{directory}/EOSConfig.asset");
-            AssetDatabase.CreateAsset(config, path);
-            AssetDatabase.SaveAssets();
-
-            Selection.activeObject = config;
-            EditorGUIUtility.PingObject(config);
-
-            Debug.Log($"[EOS] Created new EOSConfig at {path}. Configure your EOS credentials in the Inspector.");
-        }
-
-        [MenuItem(MenuRoot + "Create New Config", true)]
-        public static bool CreateEOSConfigValidate() => true;
-
-        #endregion
-
         #region Validation
 
         /// <summary>
-        /// Validates the current scene has all required components configured.
+        /// Validates the current scene has all required FishNet + EOS components.
         /// </summary>
         [MenuItem(MenuRoot + "Validate Setup", priority = 50)]
         public static void ValidateSetup()
@@ -129,7 +64,12 @@ namespace FishNet.Transport.EOSNative.Editor
             var issues = new System.Collections.Generic.List<string>();
             var warnings = new System.Collections.Generic.List<string>();
 
-            // Check for EOSNativeTransport
+            // FishNet core
+            var networkManager = UnityEngine.Object.FindAnyObjectByType<FishNet.Managing.NetworkManager>();
+            if (networkManager == null)
+                issues.Add("NetworkManager not found in scene");
+
+            // Transport
             var transport = UnityEngine.Object.FindAnyObjectByType<EOSNativeTransport>();
             if (transport == null)
             {
@@ -137,7 +77,6 @@ namespace FishNet.Transport.EOSNative.Editor
             }
             else
             {
-                // Check for config assignment
                 var configField = transport.GetType().GetField("_eosConfig",
                     System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
                 if (configField != null)
@@ -148,12 +87,7 @@ namespace FishNet.Transport.EOSNative.Editor
                 }
             }
 
-            // Check for NetworkManager
-            var networkManager = UnityEngine.Object.FindAnyObjectByType<FishNet.Managing.NetworkManager>();
-            if (networkManager == null)
-                issues.Add("NetworkManager not found in scene");
-
-            // Check for EOSManager
+            // SDK
             var eosManager = UnityEngine.Object.FindAnyObjectByType<EOSManager>();
             if (eosManager == null)
                 issues.Add("EOSManager not found in scene");
@@ -171,12 +105,11 @@ namespace FishNet.Transport.EOSNative.Editor
             if (playerSpawner == null)
                 warnings.Add("HostMigrationPlayerSpawner not found (required for player spawning)");
 
-            // Report results
             if (issues.Count == 0 && warnings.Count == 0)
             {
                 EditorUtility.DisplayDialog("Validation Passed",
-                    "All required components are properly configured!", "OK");
-                Debug.Log("[EOS] Validation passed - all components configured correctly.");
+                    "All FishNet + EOS components are properly configured!", "OK");
+                Debug.Log("[FishNet EOS] Validation passed.");
             }
             else
             {
@@ -187,7 +120,7 @@ namespace FishNet.Transport.EOSNative.Editor
                     foreach (var issue in issues)
                     {
                         message += $"  - {issue}\n";
-                        Debug.LogError($"[EOS] {issue}");
+                        Debug.LogError($"[FishNet EOS] {issue}");
                     }
                 }
                 if (warnings.Count > 0)
@@ -197,22 +130,13 @@ namespace FishNet.Transport.EOSNative.Editor
                     foreach (var warning in warnings)
                     {
                         message += $"  - {warning}\n";
-                        Debug.LogWarning($"[EOS] {warning}");
+                        Debug.LogWarning($"[FishNet EOS] {warning}");
                     }
                 }
 
-                message += "\nUse 'Tools > EOS > Setup Scene' to fix.";
+                message += "\nUse 'Tools > FishNet EOS > Setup Scene' to fix.";
                 EditorUtility.DisplayDialog("Validation Issues Found", message, "OK");
             }
-        }
-
-        /// <summary>
-        /// Logs platform info to console (useful for crossplay debugging).
-        /// </summary>
-        [MenuItem(MenuRoot + "Log Platform Info", priority = 51)]
-        public static void LogPlatformInfo()
-        {
-            EOSPlatformHelper.LogPlatformInfo();
         }
 
         #endregion
@@ -220,12 +144,11 @@ namespace FishNet.Transport.EOSNative.Editor
         #region Demo Builder
 
         /// <summary>
-        /// Creates demo prefabs (PlayerBall, Crate) in Assets/EOSDemo/Prefabs.
+        /// Creates FishNet demo prefabs (PlayerBall, Crate) in Assets/EOSDemo/Prefabs.
         /// </summary>
         [MenuItem(MenuRoot + "Build Demo Prefabs", priority = 20)]
         public static void BuildDemoPrefabs()
         {
-            // Create folder structure
             EnsureFolder("Assets", "EOSDemo");
             EnsureFolder("Assets/EOSDemo", "Prefabs");
 
@@ -236,7 +159,6 @@ namespace FishNet.Transport.EOSNative.Editor
             playerGo.name = "PlayerBallPrefab";
             playerGo.transform.position = Vector3.zero;
 
-            // Physics
             var rb = playerGo.GetComponent<Rigidbody>();
             if (rb == null) rb = playerGo.AddComponent<Rigidbody>();
             rb.mass = 1f;
@@ -244,26 +166,21 @@ namespace FishNet.Transport.EOSNative.Editor
             rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
             rb.constraints = RigidbodyConstraints.FreezeRotation;
 
-            // FishNet
-            var nob = playerGo.AddComponent<NetworkObject>();
-
-            // Physics sync
+            playerGo.AddComponent<NetworkObject>();
             var pnt = playerGo.AddComponent<PhysicsNetworkTransform>();
             pnt.rigidbodyToTrack = rb;
-            pnt.claimOwnershipOnCollision = false; // player already owns it
+            pnt.claimOwnershipOnCollision = false;
 
-            // Game logic
             playerGo.AddComponent<PlayerBall>();
             playerGo.AddComponent<EOSNetworkPlayer>();
             playerGo.AddComponent<HostMigratable>();
 
-            // Save prefab
             string playerPath = $"{prefabDir}/PlayerBallPrefab.prefab";
-            var playerPrefab = PrefabUtility.SaveAsPrefabAsset(playerGo, playerPath);
+            PrefabUtility.SaveAsPrefabAsset(playerGo, playerPath);
             UnityEngine.Object.DestroyImmediate(playerGo);
-            Debug.Log($"[EOS] Created player prefab: {playerPath}");
+            Debug.Log($"[FishNet EOS] Created player prefab: {playerPath}");
 
-            // --- Crate Prefab (physics object) ---
+            // --- Crate Prefab ---
             var crateGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
             crateGo.name = "CratePrefab";
             crateGo.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
@@ -281,12 +198,12 @@ namespace FishNet.Transport.EOSNative.Editor
             string cratePath = $"{prefabDir}/CratePrefab.prefab";
             PrefabUtility.SaveAsPrefabAsset(crateGo, cratePath);
             UnityEngine.Object.DestroyImmediate(crateGo);
-            Debug.Log($"[EOS] Created crate prefab: {cratePath}");
+            Debug.Log($"[FishNet EOS] Created crate prefab: {cratePath}");
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
-            // Wire player prefab to HostMigrationPlayerSpawner if it exists
+            // Wire player prefab to spawner if it exists
             var spawner = UnityEngine.Object.FindAnyObjectByType<HostMigrationPlayerSpawner>();
             if (spawner != null)
             {
@@ -297,22 +214,21 @@ namespace FishNet.Transport.EOSNative.Editor
                     so.FindProperty("_playerPrefab").objectReferenceValue = playerNob;
                     so.ApplyModifiedProperties();
                     EditorUtility.SetDirty(spawner);
-                    Debug.Log("[EOS] Assigned PlayerBallPrefab to HostMigrationPlayerSpawner.");
+                    Debug.Log("[FishNet EOS] Assigned PlayerBallPrefab to HostMigrationPlayerSpawner.");
                 }
             }
 
             EditorUtility.DisplayDialog("Demo Prefabs Created",
-                $"Created:\n  - {playerPath}\n  - {cratePath}\n\nPlayerBall assigned to player spawner.\nFishNet auto-registers spawnable prefabs.",
+                $"Created:\n  - {playerPath}\n  - {cratePath}\n\nFishNet auto-registers spawnable prefabs.",
                 "OK");
         }
 
         /// <summary>
-        /// Builds a complete demo scene with ground, camera, NetworkManager, and crates.
+        /// Builds a complete FishNet demo scene with ground, camera, NetworkManager, and crates.
         /// </summary>
         [MenuItem(MenuRoot + "Build Demo Scene", priority = 21)]
         public static void BuildDemoScene()
         {
-            // Ensure prefabs exist first
             if (!AssetDatabase.LoadAssetAtPath<NetworkObject>("Assets/EOSDemo/Prefabs/PlayerBallPrefab.prefab"))
             {
                 if (EditorUtility.DisplayDialog("Prefabs Not Found",
@@ -323,10 +239,9 @@ namespace FishNet.Transport.EOSNative.Editor
                 else return;
             }
 
-            // Create new scene
             var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
 
-            // Ground plane (scaled up)
+            // Ground
             var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
             ground.name = "Ground";
             ground.transform.localScale = new Vector3(5f, 1f, 5f);
@@ -334,13 +249,13 @@ namespace FishNet.Transport.EOSNative.Editor
             groundMat.color = new Color(0.3f, 0.35f, 0.3f);
             ground.GetComponent<Renderer>().material = groundMat;
 
-            // Walls to keep balls in
+            // Walls
             CreateWall("WallN", new Vector3(0f, 1f, 25f), new Vector3(50f, 2f, 0.5f));
             CreateWall("WallS", new Vector3(0f, 1f, -25f), new Vector3(50f, 2f, 0.5f));
             CreateWall("WallE", new Vector3(25f, 1f, 0f), new Vector3(0.5f, 2f, 50f));
             CreateWall("WallW", new Vector3(-25f, 1f, 0f), new Vector3(0.5f, 2f, 50f));
 
-            // Camera — add SimpleCamera for player following
+            // Camera
             var cam = UnityEngine.Object.FindAnyObjectByType<Camera>();
             if (cam != null)
             {
@@ -349,10 +264,10 @@ namespace FishNet.Transport.EOSNative.Editor
                 cam.gameObject.AddComponent<SimpleCamera>();
             }
 
-            // Setup NetworkManager via our existing SetupScene
+            // NetworkManager + transport
             SetupScene();
 
-            // Spawn some crates in the scene
+            // Crates
             var cratePrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/EOSDemo/Prefabs/CratePrefab.prefab");
             if (cratePrefab != null)
             {
@@ -366,13 +281,13 @@ namespace FishNet.Transport.EOSNative.Editor
                 }
             }
 
-            // Save scene
+            // Save
             EnsureFolder("Assets", "EOSDemo");
             EnsureFolder("Assets/EOSDemo", "Scenes");
             string scenePath = "Assets/EOSDemo/Scenes/EOSDemoScene.unity";
             EditorSceneManager.SaveScene(scene, scenePath);
 
-            Debug.Log($"[EOS] Demo scene created at {scenePath}");
+            Debug.Log($"[FishNet EOS] Demo scene created at {scenePath}");
             EditorUtility.DisplayDialog("Demo Scene Created",
                 $"Scene saved to: {scenePath}\n\nIncludes:\n  - NetworkManager + EOS transport\n  - Ground + walls\n  - SimpleCamera (follows player)\n  - 5 physics crates\n\nPress Play, then click Host in the Inspector!",
                 "OK");
@@ -390,7 +305,6 @@ namespace FishNet.Transport.EOSNative.Editor
                 return;
             }
 
-            // Count what we're about to delete
             var prefabs = AssetDatabase.FindAssets("t:Prefab", new[] { "Assets/EOSDemo" });
             var scenes = AssetDatabase.FindAssets("t:Scene", new[] { "Assets/EOSDemo" });
             var all = AssetDatabase.FindAssets("", new[] { "Assets/EOSDemo" });
@@ -409,7 +323,7 @@ namespace FishNet.Transport.EOSNative.Editor
             AssetDatabase.DeleteAsset("Assets/EOSDemo");
             AssetDatabase.Refresh();
 
-            Debug.Log("[EOS] Deleted Assets/EOSDemo and all contents.");
+            Debug.Log("[FishNet EOS] Deleted Assets/EOSDemo and all contents.");
         }
 
         [MenuItem(MenuRoot + "Delete Demo Assets", true)]
