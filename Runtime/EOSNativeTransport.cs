@@ -101,6 +101,11 @@ namespace FishNet.Transport.EOSNative
         [Tooltip("When enabled, automatically falls back to offline mode if EOS initialization or login fails.")]
         private bool _offlineFallback = false;
 
+        [Header("Auto-Start")]
+        [SerializeField]
+        [Tooltip("Automatically start FishNet server/client when a lobby is joined. If you're the owner, starts as host. If not, connects as client to the owner.")]
+        private bool _autoStartOnLobbyJoin = true;
+
         #endregion
 
         #region Lobby State
@@ -396,11 +401,13 @@ namespace FishNet.Transport.EOSNative
         public override void Initialize(NetworkManager networkManager, int transportIndex)
         {
             base.Initialize(networkManager, transportIndex);
-            Debug.Log($"[EOSNativeTransport] Initialize() called by FishNet. NetworkManager={networkManager.name}, transportIndex={transportIndex}");
         }
 
         private async void Start()
         {
+            // Subscribe BEFORE auto-init so we catch lobbies created immediately after
+            SubscribeToLobbyJoinEvent();
+
             if (_autoInitialize && _eosConfig != null)
             {
                 await AutoInitializeAsync();
@@ -474,11 +481,13 @@ namespace FishNet.Transport.EOSNative
             // Skip if we already handled this in OnPlayModeStateChanged
             if (_isExitingPlayMode) return;
 #endif
+            UnsubscribeFromLobbyJoinEvent();
             Shutdown();
         }
 
         private void OnApplicationQuit()
         {
+            UnsubscribeFromLobbyJoinEvent();
             // Leave lobby synchronously - async won't complete before Unity tears down
             if (IsInLobby && _lobbyManager != null)
             {
@@ -722,8 +731,6 @@ namespace FishNet.Transport.EOSNative
 
             var (result, lobby) = await LobbyManager.CreateLobbyAsync(options);
 
-            Debug.Log($"[EOSNativeTransport] HostLobbyAsync - CreateLobby result: {result}, JoinCode: {lobby.JoinCode}");
-
             if (result == Result.Success)
             {
                 try
@@ -762,21 +769,20 @@ namespace FishNet.Transport.EOSNative
             {
                 if (autoConnect)
                 {
-                    string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
-                    if (!string.IsNullOrEmpty(ownerPuid))
+                    if (!string.IsNullOrEmpty(lobby.OwnerPuid))
                     {
-                        RemoteProductUserId = ownerPuid;
+                        RemoteProductUserId = lobby.OwnerPuid;
                         StartClientOnly();
-                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Joined lobby {roomCode}, connecting to host...");
+                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"Joined lobby {roomCode}, connecting to host...");
                     }
                     else
                     {
-                        EOSDebugLogger.LogWarning(DebugCategory.Transport, "EOSNativeTransport", "Joined lobby but no host found after retries!");
+                        Debug.LogWarning("[EOSNativeTransport] Joined lobby but host PUID unavailable.");
                     }
                 }
                 else
                 {
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Joined lobby {roomCode} (auto-connect disabled)");
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"Joined lobby {roomCode} (auto-connect disabled)");
                 }
             }
 
@@ -802,16 +808,15 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success && autoConnect)
             {
-                string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
-                if (!string.IsNullOrEmpty(ownerPuid))
+                if (!string.IsNullOrEmpty(lobby.OwnerPuid))
                 {
-                    RemoteProductUserId = ownerPuid;
+                    RemoteProductUserId = lobby.OwnerPuid;
                     StartClientOnly();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Joined lobby by name: {lobbyName} ({lobby.JoinCode})");
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"Joined lobby by name: {lobbyName} ({lobby.JoinCode})");
                 }
                 else
                 {
-                    EOSDebugLogger.LogWarning(DebugCategory.Transport, "EOSNativeTransport", "Joined lobby but no host found after retries!");
+                    Debug.LogWarning("[EOSNativeTransport] Joined lobby but host PUID unavailable.");
                 }
             }
 
@@ -838,7 +843,6 @@ namespace FishNet.Transport.EOSNative
         /// </summary>
         public async Task LeaveLobbyAsync()
         {
-            UnsubscribeFromLobbyUpdateAutoConnect();
             StopHost();
 
             // Clear migration state to prevent stale data in future sessions
@@ -857,12 +861,15 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success)
             {
-                string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
-                if (!string.IsNullOrEmpty(ownerPuid))
+                if (!string.IsNullOrEmpty(lobby.OwnerPuid))
                 {
-                    RemoteProductUserId = ownerPuid;
+                    RemoteProductUserId = lobby.OwnerPuid;
                     StartClientOnly();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatch: Connected to {lobby.JoinCode}");
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"QuickMatch: Connected to {lobby.JoinCode}");
+                }
+                else
+                {
+                    Debug.LogWarning("[EOSNativeTransport] Joined lobby but host PUID unavailable.");
                 }
             }
 
@@ -905,17 +912,17 @@ namespace FishNet.Transport.EOSNative
                 if (didHost)
                 {
                     StartHost();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"➜ QuickMatchOrHost: Hosting {lobby.JoinCode}");
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"QuickMatchOrHost: Hosting {lobby.JoinCode}");
+                }
+                else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                {
+                    RemoteProductUserId = lobby.OwnerPuid;
+                    StartClientOnly();
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"QuickMatchOrHost: Joined {lobby.JoinCode}");
                 }
                 else
                 {
-                    string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
-                    if (!string.IsNullOrEmpty(ownerPuid))
-                    {
-                        RemoteProductUserId = ownerPuid;
-                        StartClientOnly();
-                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Joined {lobby.JoinCode}");
-                    }
+                    Debug.LogWarning("[EOSNativeTransport] Joined lobby but host PUID unavailable.");
                 }
             }
 
@@ -960,17 +967,17 @@ namespace FishNet.Transport.EOSNative
                 if (didHost)
                 {
                     StartHost();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Hosting {lobby.JoinCode}");
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"QuickMatchOrHost: Hosting {lobby.JoinCode}");
+                }
+                else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                {
+                    RemoteProductUserId = lobby.OwnerPuid;
+                    StartClientOnly();
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"QuickMatchOrHost: Joined {lobby.JoinCode}");
                 }
                 else
                 {
-                    string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
-                    if (!string.IsNullOrEmpty(ownerPuid))
-                    {
-                        RemoteProductUserId = ownerPuid;
-                        StartClientOnly();
-                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Joined {lobby.JoinCode}");
-                    }
+                    Debug.LogWarning("[EOSNativeTransport] Joined lobby but host PUID unavailable.");
                 }
             }
 
@@ -986,12 +993,15 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success)
             {
-                string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
-                if (!string.IsNullOrEmpty(ownerPuid))
+                if (!string.IsNullOrEmpty(lobby.OwnerPuid))
                 {
-                    RemoteProductUserId = ownerPuid;
+                    RemoteProductUserId = lobby.OwnerPuid;
                     StartClientOnly();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" JoinByGameMode({gameMode}): Connected to {lobby.JoinCode}");
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"JoinByGameMode({gameMode}): Connected to {lobby.JoinCode}");
+                }
+                else
+                {
+                    Debug.LogWarning("[EOSNativeTransport] Joined lobby but host PUID unavailable.");
                 }
             }
 
@@ -1104,13 +1114,8 @@ namespace FishNet.Transport.EOSNative
                     nm.TransportManager.Transport = this;
             }
 
-            Debug.Log($"[EOSNativeTransport] StartHost() - starting server and client. EOS logged in: {EOSManager.Instance?.IsLoggedIn}, offline: {_isOfflineMode}");
-
-            bool serverOk = nm.ServerManager.StartConnection();
-            Debug.Log($"[EOSNativeTransport] StartHost() - ServerManager.StartConnection() returned {serverOk}");
-
-            bool clientOk = nm.ClientManager.StartConnection();
-            Debug.Log($"[EOSNativeTransport] StartHost() - ClientManager.StartConnection() returned {clientOk}");
+            nm.ServerManager.StartConnection();
+            nm.ClientManager.StartConnection();
         }
 
         /// <summary>
@@ -1152,68 +1157,6 @@ namespace FishNet.Transport.EOSNative
             nm?.ClientManager.StartConnection();
         }
 
-        /// <summary>
-        /// Resolves the lobby owner's PUID, retrying from live lobby data if not immediately available.
-        /// EOS may not populate the owner info in the local cache immediately after joining.
-        /// If still unavailable, sets up an event listener to auto-connect when the data arrives.
-        /// </summary>
-        private async Task<string> ResolveOwnerPuidAsync(string initialOwnerPuid)
-        {
-            if (!string.IsNullOrEmpty(initialOwnerPuid))
-                return initialOwnerPuid;
-
-            // OwnerPuid not available yet — retry from live CurrentLobby data
-            for (int i = 0; i < 10; i++)
-            {
-                await Task.Delay(200);
-                string ownerPuid = LobbyManager?.CurrentLobby.OwnerPuid;
-                if (!string.IsNullOrEmpty(ownerPuid))
-                {
-                    Debug.Log($"[EOSNativeTransport] OwnerPuid resolved after {(i + 1) * 200}ms: {ownerPuid.Substring(0, Math.Min(8, ownerPuid.Length))}...");
-                    return ownerPuid;
-                }
-            }
-
-            // Still not available — subscribe to lobby update event for deferred auto-connect
-            Debug.Log("[EOSNativeTransport] OwnerPuid not available yet after 2s. Waiting for lobby update...");
-            _pendingAutoConnect = true;
-            SubscribeToLobbyUpdateForAutoConnect();
-            return null;
-        }
-
-        private bool _pendingAutoConnect;
-
-        private void SubscribeToLobbyUpdateForAutoConnect()
-        {
-            if (LobbyManager != null)
-            {
-                LobbyManager.OnLobbyUpdated -= OnLobbyUpdatedAutoConnect;
-                LobbyManager.OnLobbyUpdated += OnLobbyUpdatedAutoConnect;
-            }
-        }
-
-        private void UnsubscribeFromLobbyUpdateAutoConnect()
-        {
-            _pendingAutoConnect = false;
-            if (_lobbyManager != null)
-            {
-                _lobbyManager.OnLobbyUpdated -= OnLobbyUpdatedAutoConnect;
-            }
-        }
-
-        private void OnLobbyUpdatedAutoConnect(LobbyData lobbyData)
-        {
-            if (!_pendingAutoConnect) return;
-            if (string.IsNullOrEmpty(lobbyData.OwnerPuid)) return;
-            if (_clientState != LocalConnectionState.Stopped) return; // Already connecting/connected
-
-            Debug.Log($"[EOSNativeTransport] Auto-connecting to host (deferred): {lobbyData.OwnerPuid.Substring(0, Math.Min(8, lobbyData.OwnerPuid.Length))}...");
-            _pendingAutoConnect = false;
-            LobbyManager.OnLobbyUpdated -= OnLobbyUpdatedAutoConnect;
-
-            RemoteProductUserId = lobbyData.OwnerPuid;
-            StartClientOnly();
-        }
 
         #endregion
 
@@ -1273,6 +1216,59 @@ namespace FishNet.Transport.EOSNative
         internal void InvokeRemoteConnectionState(RemoteConnectionState state, int connectionId)
         {
             HandleRemoteConnectionState(new RemoteConnectionStateArgs(state, connectionId, Index));
+        }
+
+        #endregion
+
+        #region Lobby Auto-Start
+
+        /// <summary>
+        /// Subscribes to OnLobbyJoined so FishNet auto-starts when a lobby is created or joined
+        /// via any path (Canvas UI, custom code, etc.).
+        /// </summary>
+        private void SubscribeToLobbyJoinEvent()
+        {
+            var lobbyMgr = LobbyManager;
+            if (lobbyMgr != null)
+            {
+                lobbyMgr.OnLobbyJoined -= OnLobbyJoinedAutoStart;
+                lobbyMgr.OnLobbyJoined += OnLobbyJoinedAutoStart;
+            }
+        }
+
+        private void UnsubscribeFromLobbyJoinEvent()
+        {
+            if (_lobbyManager != null)
+            {
+                _lobbyManager.OnLobbyJoined -= OnLobbyJoinedAutoStart;
+            }
+        }
+
+        private void OnLobbyJoinedAutoStart(LobbyData lobby)
+        {
+            if (!_autoStartOnLobbyJoin) return;
+
+            // Don't double-start if already running (e.g. HostLobbyAsync already called StartHost)
+            if (_serverState != LocalConnectionState.Stopped || _clientState != LocalConnectionState.Stopped)
+                return;
+
+            // Check EOS is ready
+            if (EOSManager.Instance == null || !EOSManager.Instance.IsLoggedIn)
+                return;
+
+            if (IsLobbyOwner)
+            {
+                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport",
+                    $"Auto-starting host (lobby owner). Code: {lobby.JoinCode}");
+                StartHost();
+            }
+            else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+            {
+                RemoteProductUserId = lobby.OwnerPuid;
+                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport",
+                    $"Auto-connecting to host {lobby.OwnerPuid}. Code: {lobby.JoinCode}");
+                StartClientOnly();
+            }
         }
 
         #endregion
@@ -1347,12 +1343,9 @@ namespace FishNet.Transport.EOSNative
 
         public override bool StartConnection(bool server)
         {
-            Debug.Log($"[EOSNativeTransport] StartConnection(server={server}) called. offlineMode={_isOfflineMode}, offlineFallback={_offlineFallback}");
-
             // If already in offline mode, route to offline
             if (_isOfflineMode)
             {
-                Debug.Log($"[EOSNativeTransport] Routing to offline {(server ? "server" : "client")}");
                 if (server)
                 {
                     return StartOfflineServer();
@@ -1368,8 +1361,6 @@ namespace FishNet.Transport.EOSNative
             bool eosInitialized = eosInstanceExists && EOSManager.Instance.IsInitialized;
             bool eosLoggedIn = eosInitialized && EOSManager.Instance.IsLoggedIn;
             bool eosAvailable = eosInstanceExists && eosInitialized && eosLoggedIn;
-
-            Debug.Log($"[EOSNativeTransport] EOS state: instance={eosInstanceExists}, init={eosInitialized}, login={eosLoggedIn}, available={eosAvailable}");
 
             if (!eosAvailable)
             {
@@ -1402,24 +1393,16 @@ namespace FishNet.Transport.EOSNative
 
             if (server)
             {
-                Debug.Log("[EOSNativeTransport] Calling StartServer()...");
-                bool result = StartServer();
-                Debug.Log($"[EOSNativeTransport] StartServer() returned {result}. ServerState={_serverState}");
-                return result;
+                return StartServer();
             }
             else
             {
-                Debug.Log("[EOSNativeTransport] Calling StartClient()...");
-                bool result = StartClient();
-                Debug.Log($"[EOSNativeTransport] StartClient() returned {result}. ClientState={_clientState}");
-                return result;
+                return StartClient();
             }
         }
 
         private bool StartServer()
         {
-            Debug.Log($"[EOSNativeTransport] StartServer() - current state: {_serverState}, P2P={EOSManager.Instance?.P2PInterface != null}, LocalUser={EOSManager.Instance?.LocalProductUserId}");
-
             if (_serverState != LocalConnectionState.Stopped)
             {
                 NetworkManager.LogWarning("[EOSNativeTransport] Server is already running or starting.");
@@ -1435,7 +1418,6 @@ namespace FishNet.Transport.EOSNative
             _server.SetHeartbeatTimeout(_heartbeatTimeout);
             _server.CheckSanctionsBeforeAccept = _checkSanctionsBeforeAccept;
             bool success = _server.Start(_socketName, _maxClients);
-            Debug.Log($"[EOSNativeTransport] EOSServer.Start() returned {success}");
 
             if (success)
             {
@@ -1541,6 +1523,7 @@ namespace FishNet.Transport.EOSNative
             else
             {
                 UnsubscribeFromLobbyEvents();
+                UnsubscribeFromLobbyJoinEvent();
                 _server?.Stop();
                 _server = null;
                 NetworkManager.Log("[EOSNativeTransport] Server stopped.");
@@ -1594,8 +1577,6 @@ namespace FishNet.Transport.EOSNative
 
         public override void Shutdown()
         {
-            UnsubscribeFromLobbyUpdateAutoConnect();
-
             if (_isOfflineMode)
             {
                 StopOffline();
