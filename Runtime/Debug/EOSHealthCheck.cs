@@ -1,22 +1,25 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Reflection;
 using System.Threading.Tasks;
 using EOSNative;
 using EOSNative.Lobbies;
+using EOSNative.Voice;
 using FishNet.Managing;
 using FishNet.Transporting;
 using FishNet.Transport.EOSNative.Migration;
 using UnityEngine;
+using UnityEngine.InputSystem;
 using Debug = UnityEngine.Debug;
 
 namespace FishNet.Transport.EOSNative.Diagnostics
 {
     /// <summary>
     /// Automated runtime health check for the EOS + FishNet stack.
+    /// Three test tiers: Solo (single instance), Duo (two instances), Stress (duo + host migration).
     /// Auto-attaches to the EOSNativeTransport or EOSManager GameObject at runtime.
-    /// No manual setup needed — just have the package imported.
-    /// Press F11 to toggle the panel, press "Run" to execute a full self-test.
+    /// Press F11 to toggle the panel, select mode, press "Run" to execute.
     /// Uses OnGUI — no Canvas or prefab setup needed.
     /// </summary>
     public class EOSHealthCheck : MonoBehaviour
@@ -26,11 +29,9 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoCreate()
         {
-            // Don't double-create
             if (FindAnyObjectByType<EOSHealthCheck>() != null)
                 return;
 
-            // Attach to transport GameObject if available
             var transport = FindAnyObjectByType<EOSNativeTransport>();
             if (transport != null)
             {
@@ -38,15 +39,12 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return;
             }
 
-            // Fallback: attach to EOSManager
             var eosManager = FindAnyObjectByType<EOSManager>();
             if (eosManager != null)
             {
                 eosManager.gameObject.AddComponent<EOSHealthCheck>();
                 return;
             }
-
-            // Neither found — skip silently, nothing to health-check
         }
 
         #endregion
@@ -54,6 +52,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         #region Types
 
         public enum StepStatus { Pending, Running, Pass, Warning, Fail, Skipped }
+        public enum TestMode { Solo, Duo, Stress }
 
         public class Step
         {
@@ -64,6 +63,13 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         }
 
         private enum TestPhase { Idle, Running, Done }
+        private enum DuoRole { Unknown, Host, Client }
+
+        #endregion
+
+        #region Constants
+
+        private const string HC_LOBBY_ATTR = "HEALTHCHECK";
 
         #endregion
 
@@ -71,12 +77,15 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         [Header("Display")]
         [Tooltip("Keyboard shortcut to toggle the panel.")]
-        [SerializeField] private KeyCode _toggleKey = KeyCode.F11;
+        [SerializeField] private Key _toggleKey = Key.F11;
 
         [Tooltip("Panel width in pixels.")]
         [SerializeField] private float _panelWidth = 400f;
 
         [Header("Test Settings")]
+        [Tooltip("Which test tier to run.")]
+        [SerializeField] private TestMode _testMode = TestMode.Solo;
+
         [Tooltip("Timeout per step in seconds.")]
         [SerializeField] private float _stepTimeout = 10f;
 
@@ -88,6 +97,13 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         [Tooltip("Seconds to wait before auto-running (lets auto-init finish).")]
         [SerializeField] private float _autoRunDelay = 3f;
+
+        [Header("Duo/Stress Settings")]
+        [Tooltip("How long to wait for a partner to join (host) or for a lobby to appear (client).")]
+        [SerializeField] private float _duoPartnerTimeout = 30f;
+
+        [Tooltip("How long to wait for host migration to complete (Stress client).")]
+        [SerializeField] private float _migrationTimeout = 15f;
 
         #endregion
 
@@ -101,6 +117,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         private int _skipCount;
         private float _totalElapsed;
         private bool _isRunning;
+        private DuoRole _duoRole = DuoRole.Unknown;
 
         // Cached refs
         private NetworkManager _networkManager;
@@ -114,6 +131,8 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         private GUIStyle _detailStyle;
         private GUIStyle _buttonStyle;
         private GUIStyle _summaryStyle;
+        private GUIStyle _modeButtonStyle;
+        private GUIStyle _modeActiveStyle;
         private bool _stylesBuilt;
 
         // Colors
@@ -139,7 +158,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         private void Update()
         {
-            if (Input.GetKeyDown(_toggleKey))
+            if (Keyboard.current != null && Keyboard.current[_toggleKey].wasPressedThisFrame)
                 _visible = !_visible;
         }
 
@@ -147,9 +166,6 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         #region Public API
 
-        /// <summary>
-        /// Starts the automated health check sequence.
-        /// </summary>
         public void RunHealthCheck()
         {
             if (_isRunning) return;
@@ -158,7 +174,65 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         #endregion
 
-        #region Test Sequence
+        #region Role Detection
+
+        private static bool IsParrelSyncClone()
+        {
+#if UNITY_EDITOR
+            try
+            {
+                var clonesManagerType = Type.GetType("ParrelSync.ClonesManager, ParrelSync");
+                if (clonesManagerType == null)
+                    return false;
+
+                var isCloneMethod = clonesManagerType.GetMethod("IsClone",
+                    BindingFlags.Public | BindingFlags.Static);
+                if (isCloneMethod == null)
+                    return false;
+
+                return (bool)isCloneMethod.Invoke(null, null);
+            }
+            catch
+            {
+                return false;
+            }
+#else
+            return false;
+#endif
+        }
+
+        private void DetermineRole()
+        {
+            if (_testMode == TestMode.Solo)
+            {
+                _duoRole = DuoRole.Host;
+                return;
+            }
+
+            // In editor: ParrelSync clones are clients
+            if (IsParrelSyncClone())
+            {
+                _duoRole = DuoRole.Client;
+                return;
+            }
+
+            // In builds: --healthcheck-client CLI arg means client
+            var args = Environment.GetCommandLineArgs();
+            foreach (var arg in args)
+            {
+                if (arg.Equals("--healthcheck-client", StringComparison.OrdinalIgnoreCase))
+                {
+                    _duoRole = DuoRole.Client;
+                    return;
+                }
+            }
+
+            _duoRole = DuoRole.Host;
+        }
+
+        #endregion
+
+        #region Test Sequence — Main
 
         private async Task RunHealthCheckAsync()
         {
@@ -180,7 +254,46 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             if (_transport == null)
                 _transport = FindAnyObjectByType<EOSNativeTransport>();
 
-            // --- Step 1: Check scene setup ---
+            DetermineRole();
+
+            // Steps 1-8: common setup
+            bool loggedIn = await RunCommonSetupSteps();
+
+            // Dispatch to mode-specific steps
+            switch (_testMode)
+            {
+                case TestMode.Solo:
+                    await RunSoloSteps(loggedIn);
+                    break;
+                case TestMode.Duo:
+                case TestMode.Stress:
+                    if (_duoRole == DuoRole.Client)
+                        await RunDuoClientSteps(loggedIn);
+                    else
+                        await RunDuoHostSteps(loggedIn);
+                    break;
+            }
+
+            // Finalize
+            totalSw.Stop();
+            _totalElapsed = totalSw.ElapsedMilliseconds / 1000f;
+            _phase = TestPhase.Done;
+            _isRunning = false;
+
+            string modeLabel = _testMode == TestMode.Solo ? "Solo" : $"{_testMode}:{_duoRole}";
+            string summary = $"[EOSHealthCheck:{modeLabel}] Done: {_passCount} pass, {_failCount} fail, {_skipCount} skip in {_totalElapsed:F1}s";
+            if (_failCount > 0)
+                Debug.LogWarning(summary);
+            else
+                Debug.Log(summary);
+        }
+
+        /// <summary>
+        /// Steps 1-8: Scene setup, EOSManager, SDK init, login, lobby manager, P2P, migration manager, player spawner.
+        /// </summary>
+        private async Task<bool> RunCommonSetupSteps()
+        {
+            // Step 1: Scene Setup
             await RunStep("Scene Setup", () =>
             {
                 if (_networkManager == null)
@@ -195,7 +308,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, "NM + Transport OK");
             });
 
-            // --- Step 2: EOS Manager ---
+            // Step 2: EOSManager
             await RunStep("EOSManager", () =>
             {
                 if (EOSManager.Instance == null)
@@ -203,7 +316,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, "Instance exists");
             });
 
-            // --- Step 3: EOS SDK Initialized ---
+            // Step 3: SDK Initialized
             bool sdkInit = false;
             await RunStep("SDK Initialized", () =>
             {
@@ -215,7 +328,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, "Initialized");
             });
 
-            // --- Step 4: EOS Logged In ---
+            // Step 4: EOS Login
             bool loggedIn = false;
             await RunStep("EOS Login", () =>
             {
@@ -228,7 +341,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, Truncate(puid, 16));
             });
 
-            // --- Step 5: Lobby Manager ---
+            // Step 5: LobbyManager
             await RunStep("LobbyManager", () =>
             {
                 if (_transport == null)
@@ -239,7 +352,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, "Instance OK");
             });
 
-            // --- Step 6: P2P Interface ---
+            // Step 6: P2P Interface
             await RunStep("P2P Interface", () =>
             {
                 if (!loggedIn)
@@ -250,7 +363,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, "Available");
             });
 
-            // --- Step 7: Host Migration Manager ---
+            // Step 7: HostMigrationManager
             await RunStep("HostMigrationManager", () =>
             {
                 var hm = HostMigrationManager.Instance;
@@ -259,7 +372,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, "Instance OK");
             });
 
-            // --- Step 8: Player Spawner ---
+            // Step 8: PlayerSpawner
             await RunStep("PlayerSpawner", () =>
             {
                 var spawner = FindAnyObjectByType<HostMigrationPlayerSpawner>();
@@ -270,14 +383,22 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return (StepStatus.Pass, $"Prefab: {spawner.PlayerPrefab.name}");
             });
 
-            // --- Step 9: Create Lobby (Host Test) ---
+            return loggedIn;
+        }
+
+        #endregion
+
+        #region Solo Steps
+
+        private async Task RunSoloSteps(bool loggedIn)
+        {
             bool lobbyCreated = false;
-            string testJoinCode = null;
+
+            // Step 9: Host Lobby
             if (loggedIn && _transport != null)
             {
                 await RunStepAsync("Host Lobby", async () =>
                 {
-                    // Don't test if already in a lobby
                     if (_transport.IsInLobby)
                         return (StepStatus.Skipped, $"Already in lobby: {_transport.CurrentLobby.JoinCode}");
 
@@ -285,7 +406,6 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                     if (result == Epic.OnlineServices.Result.Success)
                     {
                         lobbyCreated = true;
-                        testJoinCode = lobby.JoinCode;
                         return (StepStatus.Pass, $"Code: {lobby.JoinCode}");
                     }
                     return (StepStatus.Fail, $"Result: {result}");
@@ -296,17 +416,15 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("Host Lobby", "Not logged in");
             }
 
-            // --- Step 10: Verify Server Started ---
+            // Step 10: Server Started
             if (lobbyCreated)
             {
                 await RunStepWithWait("Server Started", () =>
                 {
                     if (_transport == null) return (StepStatus.Fail, "No transport");
                     var state = _transport.GetConnectionState(true);
-                    if (state == LocalConnectionState.Started)
-                        return (StepStatus.Pass, "Running");
-                    if (state == LocalConnectionState.Starting)
-                        return (StepStatus.Running, "Starting...");
+                    if (state == LocalConnectionState.Started) return (StepStatus.Pass, "Running");
+                    if (state == LocalConnectionState.Starting) return (StepStatus.Running, "Starting...");
                     return (StepStatus.Fail, $"State: {state}");
                 });
             }
@@ -315,7 +433,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("Server Started", "No lobby");
             }
 
-            // --- Step 11: Verify Client (Host) Started ---
+            // Step 11: Client (Host) Started
             if (lobbyCreated)
             {
                 await RunStepWithWait("Client (Host) Started", () =>
@@ -323,12 +441,8 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                     if (_transport == null) return (StepStatus.Fail, "No transport");
                     var state = _transport.GetConnectionState(false);
                     if (state == LocalConnectionState.Started)
-                    {
-                        bool hasClientHost = _transport.HasClientHost;
-                        return (StepStatus.Pass, hasClientHost ? "ClientHost active" : "Connected");
-                    }
-                    if (state == LocalConnectionState.Starting)
-                        return (StepStatus.Running, "Connecting...");
+                        return (StepStatus.Pass, _transport.HasClientHost ? "ClientHost active" : "Connected");
+                    if (state == LocalConnectionState.Starting) return (StepStatus.Running, "Connecting...");
                     return (StepStatus.Fail, $"State: {state}");
                 });
             }
@@ -337,15 +451,13 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("Client (Host) Started", "No lobby");
             }
 
-            // --- Step 12: Verify Lobby State ---
+            // Step 12: Lobby State
             if (lobbyCreated)
             {
                 await RunStep("Lobby State", () =>
                 {
-                    if (!_transport.IsInLobby)
-                        return (StepStatus.Fail, "Not in lobby");
-                    if (!_transport.IsLobbyOwner)
-                        return (StepStatus.Fail, "Not owner");
+                    if (!_transport.IsInLobby) return (StepStatus.Fail, "Not in lobby");
+                    if (!_transport.IsLobbyOwner) return (StepStatus.Fail, "Not owner");
                     var lobby = _transport.CurrentLobby;
                     return (StepStatus.Pass, $"Owner, {lobby.MemberCount}/{lobby.MaxMembers} members");
                 });
@@ -355,7 +467,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("Lobby State", "No lobby");
             }
 
-            // --- Step 13: Hold & verify traffic ---
+            // Step 13: Connection Hold
             if (lobbyCreated)
             {
                 await RunStepAsync("Connection Hold", async () =>
@@ -373,7 +485,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
                     if (delta > 0)
                         return (StepStatus.Pass, $"Stable {_holdDuration}s, {delta} bytes exchanged");
-                    return (StepStatus.Pass, $"Stable {_holdDuration}s (no traffic yet — normal for solo host)");
+                    return (StepStatus.Pass, $"Stable {_holdDuration}s (no traffic — normal for solo host)");
                 });
             }
             else
@@ -381,29 +493,513 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("Connection Hold", "No lobby");
             }
 
-            // --- Step 14: Teardown ---
+            // Step 14: Player Spawn
             if (lobbyCreated)
             {
-                await RunStepAsync("Teardown", async () =>
+                await RunStepWithWait("Player Spawn", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    if (local != null)
+                        return (StepStatus.Pass, $"Spawned (conn:{local.ConnectionId})");
+                    if (EOSNetworkPlayer.PlayerCount > 0)
+                        return (StepStatus.Running, $"{EOSNetworkPlayer.PlayerCount} player(s), no local owner yet");
+                    return (StepStatus.Running, "Waiting for spawn...");
+                });
+            }
+            else
+            {
+                AddSkipped("Player Spawn", "No lobby");
+            }
+
+            // Step 15: Player SyncVars
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Player SyncVars", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    if (local == null)
+                        return (StepStatus.Running, "No local player yet");
+                    if (!string.IsNullOrEmpty(local.Puid))
+                        return (StepStatus.Pass, $"PUID: {Truncate(local.Puid, 12)}, Name: {local.DisplayName}");
+                    return (StepStatus.Running, "Waiting for PUID sync...");
+                });
+            }
+            else
+            {
+                AddSkipped("Player SyncVars", "No lobby");
+            }
+
+            // Step 16: Voice Connected
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Voice Connected", () =>
+                {
+                    var voice = EOSVoiceManager.Instance;
+                    if (voice == null)
+                        return (StepStatus.Pass, "No EOSVoiceManager (optional)");
+                    if (voice.IsConnected)
+                        return (StepStatus.Pass, $"Connected, {voice.ParticipantCount} participant(s)");
+                    if (voice.IsVoiceEnabled)
+                        return (StepStatus.Running, "Connecting to RTC...");
+                    return (StepStatus.Pass, "Voice not enabled for this lobby");
+                });
+            }
+            else
+            {
+                AddSkipped("Voice Connected", "No lobby");
+            }
+
+            // Step 17: Voice Mic Level (info only, always passes)
+            if (lobbyCreated)
+            {
+                await RunStep("Voice Mic Level", () =>
+                {
+                    var voice = EOSVoiceManager.Instance;
+                    if (voice == null)
+                        return (StepStatus.Pass, "No voice manager");
+                    return (StepStatus.Pass, $"Level: {voice.LocalMicLevel:F2}, Status: {voice.LocalAudioStatus}, Muted: {voice.IsMuted}");
+                });
+            }
+            else
+            {
+                AddSkipped("Voice Mic Level", "No lobby");
+            }
+
+            // Step 18: Teardown
+            if (lobbyCreated)
+            {
+                await RunTeardownStep();
+            }
+            else
+            {
+                AddSkipped("Teardown", "Nothing to tear down");
+            }
+        }
+
+        #endregion
+
+        #region Duo Host Steps
+
+        private async Task RunDuoHostSteps(bool loggedIn)
+        {
+            bool lobbyCreated = false;
+
+            // Step 9: Host Lobby with HC attribute
+            if (loggedIn && _transport != null)
+            {
+                await RunStepAsync("Host Lobby [HC]", async () =>
+                {
+                    if (_transport.IsInLobby)
+                        return (StepStatus.Skipped, $"Already in lobby: {_transport.CurrentLobby.JoinCode}");
+
+                    var options = new LobbyCreateOptions
+                    {
+                        Attributes = new Dictionary<string, string>
+                        {
+                            [HC_LOBBY_ATTR] = "true"
+                        }
+                    };
+
+                    var (result, lobby) = await _transport.HostLobbyAsync(options);
+                    if (result == Epic.OnlineServices.Result.Success)
+                    {
+                        lobbyCreated = true;
+                        return (StepStatus.Pass, $"Code: {lobby.JoinCode}");
+                    }
+                    return (StepStatus.Fail, $"Result: {result}");
+                });
+            }
+            else
+            {
+                AddSkipped("Host Lobby [HC]", "Not logged in");
+            }
+
+            // Step 10: Server Started
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Server Started", () =>
+                {
+                    if (_transport == null) return (StepStatus.Fail, "No transport");
+                    var state = _transport.GetConnectionState(true);
+                    if (state == LocalConnectionState.Started) return (StepStatus.Pass, "Running");
+                    if (state == LocalConnectionState.Starting) return (StepStatus.Running, "Starting...");
+                    return (StepStatus.Fail, $"State: {state}");
+                });
+            }
+            else
+            {
+                AddSkipped("Server Started", "No lobby");
+            }
+
+            // Step 11: Client (Host) Started
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Client (Host) Started", () =>
+                {
+                    if (_transport == null) return (StepStatus.Fail, "No transport");
+                    var state = _transport.GetConnectionState(false);
+                    if (state == LocalConnectionState.Started)
+                        return (StepStatus.Pass, _transport.HasClientHost ? "ClientHost active" : "Connected");
+                    if (state == LocalConnectionState.Starting) return (StepStatus.Running, "Connecting...");
+                    return (StepStatus.Fail, $"State: {state}");
+                });
+            }
+            else
+            {
+                AddSkipped("Client (Host) Started", "No lobby");
+            }
+
+            // Step 12: Lobby State
+            if (lobbyCreated)
+            {
+                await RunStep("Lobby State", () =>
+                {
+                    if (!_transport.IsInLobby) return (StepStatus.Fail, "Not in lobby");
+                    if (!_transport.IsLobbyOwner) return (StepStatus.Fail, "Not owner");
+                    var lobby = _transport.CurrentLobby;
+                    return (StepStatus.Pass, $"Owner, {lobby.MemberCount}/{lobby.MaxMembers} members");
+                });
+            }
+            else
+            {
+                AddSkipped("Lobby State", "No lobby");
+            }
+
+            // Step 13: Wait for Partner (30s timeout)
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Wait for Partner", () =>
+                {
+                    if (!_transport.IsInLobby) return (StepStatus.Fail, "Lost lobby");
+                    var lobby = _transport.CurrentLobby;
+                    if (lobby.MemberCount >= 2)
+                        return (StepStatus.Pass, $"{lobby.MemberCount} members joined");
+                    return (StepStatus.Running, $"Waiting... ({lobby.MemberCount}/2)");
+                }, _duoPartnerTimeout);
+            }
+            else
+            {
+                AddSkipped("Wait for Partner", "No lobby");
+            }
+
+            // Step 14: Remote P2P
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Remote P2P", () =>
+                {
+                    int count = _transport.ServerP2PConnectionCount;
+                    if (count >= 1)
+                        return (StepStatus.Pass, $"{count} remote connection(s)");
+                    return (StepStatus.Running, "Waiting for P2P...");
+                });
+            }
+            else
+            {
+                AddSkipped("Remote P2P", "No lobby");
+            }
+
+            // Step 15: Remote Player
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Remote Player", () =>
+                {
+                    int count = EOSNetworkPlayer.PlayerCount;
+                    if (count >= 2)
+                        return (StepStatus.Pass, $"{count} players tracked");
+                    return (StepStatus.Running, $"{count}/2 players...");
+                });
+            }
+            else
+            {
+                AddSkipped("Remote Player", "No lobby");
+            }
+
+            // Step 16: SyncVars + Voice
+            if (lobbyCreated)
+            {
+                await RunStep("SyncVars + Voice", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    string syncInfo = local != null && !string.IsNullOrEmpty(local.Puid)
+                        ? $"PUID: {Truncate(local.Puid, 8)}"
+                        : "No PUID";
+
+                    var voice = EOSVoiceManager.Instance;
+                    string voiceInfo = voice != null
+                        ? (voice.IsConnected ? $"Voice OK ({voice.ParticipantCount}p)" : "Voice pending")
+                        : "No voice mgr";
+
+                    bool puidOk = local != null && !string.IsNullOrEmpty(local.Puid);
+                    return (puidOk ? StepStatus.Pass : StepStatus.Warning, $"{syncInfo}, {voiceInfo}");
+                });
+            }
+            else
+            {
+                AddSkipped("SyncVars + Voice", "No lobby");
+            }
+
+            // Step 17: Stability Hold
+            if (lobbyCreated)
+            {
+                await RunStepAsync("Stability Hold", async () =>
+                {
+                    long bytesBefore = _transport.TotalBytesSent + _transport.TotalBytesReceived;
+                    await Task.Delay(Mathf.RoundToInt(_holdDuration * 1000));
+                    long bytesAfter = _transport.TotalBytesSent + _transport.TotalBytesReceived;
+                    long delta = bytesAfter - bytesBefore;
+
+                    bool serverOk = _transport.GetConnectionState(true) == LocalConnectionState.Started;
+                    bool clientOk = _transport.GetConnectionState(false) == LocalConnectionState.Started;
+                    bool p2pOk = _transport.ServerP2PConnectionCount >= 1;
+
+                    if (!serverOk || !clientOk)
+                        return (StepStatus.Fail, $"Connection dropped! S:{serverOk} C:{clientOk}");
+                    if (!p2pOk)
+                        return (StepStatus.Fail, "P2P connection lost");
+
+                    return (StepStatus.Pass, $"Stable {_holdDuration}s, {delta} bytes, P2P OK");
+                });
+            }
+            else
+            {
+                AddSkipped("Stability Hold", "No lobby");
+            }
+
+            // Stress mode: migration save + host leave
+            if (_testMode == TestMode.Stress && lobbyCreated)
+            {
+                // Step 18: Migration Save
+                await RunStep("Migration Save", () =>
+                {
+                    var hm = HostMigrationManager.Instance;
+                    if (hm == null)
+                        return (StepStatus.Fail, "No HostMigrationManager");
+                    hm.DebugTriggerSave();
+                    return (StepStatus.Pass, $"Saved, {hm.TotalTrackedCount} tracked objects");
+                });
+
+                // Step 19: Host Leave (triggers migration for partner)
+                await RunStepAsync("Host Leave", async () =>
                 {
                     try
                     {
                         await _transport.LeaveLobbyAsync();
-
-                        // Wait briefly for state to settle
                         await Task.Delay(500);
-
-                        bool serverStopped = _transport.GetConnectionState(true) == LocalConnectionState.Stopped;
-                        bool clientStopped = _transport.GetConnectionState(false) == LocalConnectionState.Stopped;
                         bool leftLobby = !_transport.IsInLobby;
+                        return leftLobby
+                            ? (StepStatus.Pass, "Left — partner should migrate")
+                            : (StepStatus.Fail, "Still in lobby");
+                    }
+                    catch (Exception ex)
+                    {
+                        return (StepStatus.Fail, $"Exception: {ex.Message}");
+                    }
+                });
+            }
+            else if (lobbyCreated)
+            {
+                // Step 18: Normal teardown
+                await RunTeardownStep();
+            }
+            else
+            {
+                AddSkipped(_testMode == TestMode.Stress ? "Migration Save" : "Teardown", "Nothing to tear down");
+            }
+        }
 
-                        if (serverStopped && clientStopped && leftLobby)
-                            return (StepStatus.Pass, "Clean shutdown");
+        #endregion
+
+        #region Duo Client Steps
+
+        private async Task RunDuoClientSteps(bool loggedIn)
+        {
+            bool joined = false;
+            string foundJoinCode = null;
+
+            // Step 9: Find HC Lobby (polls every 2s)
+            if (loggedIn && _transport != null)
+            {
+                await RunStepAsync("Find HC Lobby", async () =>
+                {
+                    float deadline = Time.realtimeSinceStartup + _duoPartnerTimeout;
+                    while (Time.realtimeSinceStartup < deadline)
+                    {
+                        var searchOptions = new LobbySearchOptions().WithAttribute(HC_LOBBY_ATTR, "true");
+                        var (result, lobbies) = await _transport.SearchLobbiesAsync(searchOptions);
+                        if (result == Epic.OnlineServices.Result.Success && lobbies != null && lobbies.Count > 0)
+                        {
+                            foundJoinCode = lobbies[0].JoinCode;
+                            return (StepStatus.Pass, $"Found: {foundJoinCode} ({lobbies.Count} result(s))");
+                        }
+                        await Task.Delay(2000);
+                    }
+                    return (StepStatus.Fail, $"Timeout ({_duoPartnerTimeout}s) — no HC lobby found");
+                }, _duoPartnerTimeout + 5f);
+            }
+            else
+            {
+                AddSkipped("Find HC Lobby", "Not logged in");
+            }
+
+            // Step 10: Join Lobby
+            if (foundJoinCode != null && _transport != null)
+            {
+                await RunStepAsync("Join Lobby", async () =>
+                {
+                    if (_transport.IsInLobby)
+                        return (StepStatus.Skipped, $"Already in lobby: {_transport.CurrentLobby.JoinCode}");
+
+                    var (result, lobby) = await _transport.JoinLobbyAsync(foundJoinCode);
+                    if (result == Epic.OnlineServices.Result.Success)
+                    {
+                        joined = true;
+                        return (StepStatus.Pass, $"Joined: {lobby.JoinCode}");
+                    }
+                    return (StepStatus.Fail, $"Result: {result}");
+                });
+            }
+            else
+            {
+                AddSkipped("Join Lobby", foundJoinCode == null ? "No lobby found" : "No transport");
+            }
+
+            // Step 11: Client Connected
+            if (joined)
+            {
+                await RunStepWithWait("Client Connected", () =>
+                {
+                    if (_transport == null) return (StepStatus.Fail, "No transport");
+                    var state = _transport.GetConnectionState(false);
+                    if (state == LocalConnectionState.Started)
+                        return (StepStatus.Pass, "Connected to host");
+                    if (state == LocalConnectionState.Starting)
+                        return (StepStatus.Running, "Connecting...");
+                    return (StepStatus.Fail, $"State: {state}");
+                });
+            }
+            else
+            {
+                AddSkipped("Client Connected", "Not joined");
+            }
+
+            // Step 12: Player Spawn
+            if (joined)
+            {
+                await RunStepWithWait("Player Spawn", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    if (local != null)
+                        return (StepStatus.Pass, $"Spawned (conn:{local.ConnectionId})");
+                    if (EOSNetworkPlayer.PlayerCount > 0)
+                        return (StepStatus.Running, $"{EOSNetworkPlayer.PlayerCount} player(s), no local owner yet");
+                    return (StepStatus.Running, "Waiting for spawn...");
+                });
+            }
+            else
+            {
+                AddSkipped("Player Spawn", "Not joined");
+            }
+
+            // Step 13: SyncVar Received
+            if (joined)
+            {
+                await RunStepWithWait("SyncVar Received", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    if (local == null)
+                        return (StepStatus.Running, "No local player yet");
+                    if (!string.IsNullOrEmpty(local.Puid))
+                        return (StepStatus.Pass, $"PUID: {Truncate(local.Puid, 12)}, Name: {local.DisplayName}");
+                    return (StepStatus.Running, "Waiting for PUID sync...");
+                });
+            }
+            else
+            {
+                AddSkipped("SyncVar Received", "Not joined");
+            }
+
+            // Step 14: Stability Hold
+            if (joined)
+            {
+                await RunStepAsync("Stability Hold", async () =>
+                {
+                    long bytesBefore = _transport.TotalBytesSent + _transport.TotalBytesReceived;
+                    await Task.Delay(Mathf.RoundToInt(_holdDuration * 1000));
+                    long bytesAfter = _transport.TotalBytesSent + _transport.TotalBytesReceived;
+                    long delta = bytesAfter - bytesBefore;
+
+                    bool clientOk = _transport.GetConnectionState(false) == LocalConnectionState.Started;
+                    if (!clientOk)
+                        return (StepStatus.Fail, "Client connection dropped!");
+
+                    return (StepStatus.Pass, $"Stable {_holdDuration}s, {delta} bytes");
+                });
+            }
+            else
+            {
+                AddSkipped("Stability Hold", "Not joined");
+            }
+
+            // Stress mode: migration verification
+            if (_testMode == TestMode.Stress && joined)
+            {
+                // Step 15: Migration Started
+                await RunStepWithWait("Migration Started", () =>
+                {
+                    var hm = HostMigrationManager.Instance;
+                    if (hm == null)
+                        return (StepStatus.Fail, "No HostMigrationManager");
+                    if (hm.IsMigrating)
+                        return (StepStatus.Pass, "Migration detected");
+                    return (StepStatus.Running, "Waiting for host to leave...");
+                }, _migrationTimeout);
+
+                // Step 16: Migration Complete
+                await RunStepWithWait("Migration Complete", () =>
+                {
+                    var hm = HostMigrationManager.Instance;
+                    if (hm == null)
+                        return (StepStatus.Fail, "No HostMigrationManager");
+                    if (!hm.IsMigrating)
+                    {
+                        var serverState = _transport.GetConnectionState(true);
+                        if (serverState == LocalConnectionState.Started)
+                            return (StepStatus.Pass, "Migrated — now hosting");
+                        return (StepStatus.Running, $"Migration done, server: {serverState}");
+                    }
+                    return (StepStatus.Running, "Migrating...");
+                }, _migrationTimeout);
+
+                // Step 17: Objects Survived
+                await RunStep("Objects Survived", () =>
+                {
+                    int count = EOSNetworkPlayer.PlayerCount;
+                    if (count >= 1)
+                        return (StepStatus.Pass, $"{count} player(s) survived migration");
+                    return (StepStatus.Fail, "No players after migration");
+                });
+
+                // Step 18: Teardown
+                await RunTeardownStep();
+            }
+            else if (joined)
+            {
+                // Step 15: Leave
+                await RunStepAsync("Leave", async () =>
+                {
+                    try
+                    {
+                        await _transport.LeaveLobbyAsync();
+                        await Task.Delay(500);
+                        bool leftLobby = !_transport.IsInLobby;
+                        bool clientStopped = _transport.GetConnectionState(false) == LocalConnectionState.Stopped;
+
+                        if (leftLobby && clientStopped)
+                            return (StepStatus.Pass, "Clean leave");
 
                         string issues = "";
-                        if (!serverStopped) issues += "Server still running. ";
-                        if (!clientStopped) issues += "Client still running. ";
                         if (!leftLobby) issues += "Still in lobby. ";
+                        if (!clientStopped) issues += "Client still connected. ";
                         return (StepStatus.Fail, issues.Trim());
                     }
                     catch (Exception ex)
@@ -414,21 +1010,41 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             }
             else
             {
-                AddSkipped("Teardown", "Nothing to tear down");
+                AddSkipped(_testMode == TestMode.Stress ? "Migration Started" : "Leave", "Not joined");
             }
+        }
 
-            // Finalize
-            totalSw.Stop();
-            _totalElapsed = totalSw.ElapsedMilliseconds / 1000f;
-            _phase = TestPhase.Done;
-            _isRunning = false;
+        #endregion
 
-            // Log summary
-            string summary = $"[EOSHealthCheck] Done: {_passCount} pass, {_failCount} fail, {_skipCount} skip in {_totalElapsed:F1}s";
-            if (_failCount > 0)
-                Debug.LogWarning(summary);
-            else
-                Debug.Log(summary);
+        #region Shared Steps
+
+        private async Task RunTeardownStep()
+        {
+            await RunStepAsync("Teardown", async () =>
+            {
+                try
+                {
+                    await _transport.LeaveLobbyAsync();
+                    await Task.Delay(500);
+
+                    bool serverStopped = _transport.GetConnectionState(true) == LocalConnectionState.Stopped;
+                    bool clientStopped = _transport.GetConnectionState(false) == LocalConnectionState.Stopped;
+                    bool leftLobby = !_transport.IsInLobby;
+
+                    if (serverStopped && clientStopped && leftLobby)
+                        return (StepStatus.Pass, "Clean shutdown");
+
+                    string issues = "";
+                    if (!serverStopped) issues += "Server still running. ";
+                    if (!clientStopped) issues += "Client still running. ";
+                    if (!leftLobby) issues += "Still in lobby. ";
+                    return (StepStatus.Fail, issues.Trim());
+                }
+                catch (Exception ex)
+                {
+                    return (StepStatus.Fail, $"Exception: {ex.Message}");
+                }
+            });
         }
 
         #endregion
@@ -444,7 +1060,6 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             try
             {
                 var (status, detail) = check();
-                // Treat Warning as a pass for counting
                 if (status == StepStatus.Warning)
                 {
                     step.Status = StepStatus.Pass;
@@ -467,26 +1082,26 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             sw.Stop();
             step.ElapsedMs = sw.ElapsedMilliseconds;
 
-            // Yield a frame so GUI updates
             await Task.Yield();
         }
 
-        private async Task RunStepAsync(string name, Func<Task<(StepStatus status, string detail)>> check)
+        private async Task RunStepAsync(string name, Func<Task<(StepStatus status, string detail)>> check, float? timeoutOverride = null)
         {
             var step = new Step { Name = name, Status = StepStatus.Running, Detail = "" };
             _steps.Add(step);
 
+            float timeout = timeoutOverride ?? _stepTimeout;
             var sw = Stopwatch.StartNew();
             try
             {
-                var timeoutTask = Task.Delay(Mathf.RoundToInt(_stepTimeout * 1000));
+                var timeoutTask = Task.Delay(Mathf.RoundToInt(timeout * 1000));
                 var checkTask = check();
                 var completed = await Task.WhenAny(checkTask, timeoutTask);
 
                 if (completed == timeoutTask)
                 {
                     step.Status = StepStatus.Fail;
-                    step.Detail = $"Timeout ({_stepTimeout}s)";
+                    step.Detail = $"Timeout ({timeout}s)";
                     _failCount++;
                 }
                 else
@@ -507,13 +1122,18 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             step.ElapsedMs = sw.ElapsedMilliseconds;
         }
 
-        private async Task RunStepWithWait(string name, Func<(StepStatus status, string detail)> check)
+        private Task RunStepWithWait(string name, Func<(StepStatus status, string detail)> check)
+        {
+            return RunStepWithWait(name, check, _stepTimeout);
+        }
+
+        private async Task RunStepWithWait(string name, Func<(StepStatus status, string detail)> check, float timeout)
         {
             var step = new Step { Name = name, Status = StepStatus.Running, Detail = "Waiting..." };
             _steps.Add(step);
 
             var sw = Stopwatch.StartNew();
-            float deadline = Time.unscaledTime + _stepTimeout;
+            float deadline = Time.unscaledTime + timeout;
 
             try
             {
@@ -531,13 +1151,11 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                         return;
                     }
 
-                    // Still running — wait a frame
                     await Task.Yield();
                 }
 
-                // Timed out
                 step.Status = StepStatus.Fail;
-                step.Detail = $"Timeout ({_stepTimeout}s)";
+                step.Detail = $"Timeout ({timeout}s)";
                 _failCount++;
             }
             catch (Exception ex)
@@ -619,6 +1237,19 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 richText = true,
                 fontStyle = FontStyle.Bold
             };
+
+            _modeButtonStyle = new GUIStyle(GUI.skin.button)
+            {
+                fontSize = 11,
+                fontStyle = FontStyle.Normal
+            };
+
+            _modeActiveStyle = new GUIStyle(GUI.skin.button)
+            {
+                fontSize = 11,
+                fontStyle = FontStyle.Bold
+            };
+            _modeActiveStyle.normal.textColor = Cyan;
         }
 
         private void OnGUI()
@@ -630,13 +1261,21 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             float rowHeight = 22f;
             float headerHeight = 26f;
             float buttonHeight = 28f;
-            float summaryHeight = _phase == TestPhase.Done ? 24f : 0f;
-            float contentHeight = headerHeight + buttonHeight + 8f + (_steps.Count * rowHeight) + summaryHeight + 20f;
-            float maxHeight = Screen.height * 0.85f;
-            bool needsScroll = contentHeight > maxHeight;
-            float panelHeight = needsScroll ? maxHeight : contentHeight;
+            bool showModeSelector = !_isRunning;
+            float modeRowHeight = showModeSelector ? 28f : 0f;
+            float summaryHeight = _phase == TestPhase.Done ? 30f : 0f;
 
-            // Position at top-right
+            // Fixed chrome height (everything except the scrollable steps list)
+            float fixedHeight = headerHeight + modeRowHeight + buttonHeight + 12f + summaryHeight;
+
+            float stepsContentHeight = _steps.Count * rowHeight;
+            float totalContentHeight = fixedHeight + stepsContentHeight + 20f;
+            float maxHeight = Screen.height * 0.85f;
+            float panelHeight = Mathf.Min(totalContentHeight, maxHeight);
+
+            // How much space the scroll area gets
+            float scrollAreaHeight = panelHeight - fixedHeight - 16f;
+
             float panelX = Screen.width - _panelWidth - 10;
             var panelRect = new Rect(panelX, 10, _panelWidth, panelHeight);
 
@@ -644,17 +1283,41 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
             GUILayout.BeginArea(new Rect(panelRect.x + 8, panelRect.y + 4, panelRect.width - 16, panelRect.height - 8));
 
-            // Header
+            // Header with mode/role info
             GUILayout.BeginHorizontal();
-            GUILayout.Label("EOS Health Check", _headerStyle);
+            string headerLabel = _testMode switch
+            {
+                TestMode.Solo => "EOS Health Check [Solo]",
+                TestMode.Duo => _duoRole != DuoRole.Unknown ? $"EOS Health Check [Duo:{_duoRole}]" : "EOS Health Check [Duo]",
+                TestMode.Stress => _duoRole != DuoRole.Unknown ? $"EOS Health Check [Stress:{_duoRole}]" : "EOS Health Check [Stress]",
+                _ => "EOS Health Check"
+            };
+            GUILayout.Label(headerLabel, _headerStyle);
             GUILayout.FlexibleSpace();
             GUILayout.Label($"<color=#{ColorUtility.ToHtmlStringRGB(Gray)}>[{_toggleKey}]</color>", _detailStyle);
             GUILayout.EndHorizontal();
 
+            // Mode selector (when not running)
+            if (showModeSelector)
+            {
+                GUILayout.Space(2);
+                GUILayout.BeginHorizontal();
+                foreach (TestMode mode in Enum.GetValues(typeof(TestMode)))
+                {
+                    var style = _testMode == mode ? _modeActiveStyle : _modeButtonStyle;
+                    if (GUILayout.Button(mode.ToString(), style, GUILayout.Height(22f)))
+                    {
+                        _testMode = mode;
+                    }
+                }
+                GUILayout.EndHorizontal();
+            }
+
             // Run button
             GUILayout.Space(2);
             GUI.enabled = !_isRunning;
-            if (GUILayout.Button(_isRunning ? "Running..." : (_phase == TestPhase.Done ? "Re-Run Health Check" : "Run Health Check"), _buttonStyle, GUILayout.Height(buttonHeight)))
+            string runLabel = _isRunning ? "Running..." : (_phase == TestPhase.Done ? $"Re-Run {_testMode}" : $"Run {_testMode}");
+            if (GUILayout.Button(runLabel, _buttonStyle, GUILayout.Height(buttonHeight)))
             {
                 RunHealthCheck();
             }
@@ -662,20 +1325,17 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
             GUILayout.Space(4);
 
-            // Steps list
-            if (needsScroll)
-                _scrollPos = GUILayout.BeginScrollView(_scrollPos);
+            // Steps list — always in a scroll view with explicit height
+            _scrollPos = GUILayout.BeginScrollView(_scrollPos, GUILayout.Height(scrollAreaHeight));
 
             foreach (var step in _steps)
             {
                 GUILayout.BeginHorizontal();
 
-                // Status indicator + name
                 string dot = StatusDot(step.Status);
                 string statusLabel = step.Status == StepStatus.Running ? " ..." : "";
                 GUILayout.Label($"{dot} {step.Name}{statusLabel}", _rowStyle, GUILayout.Width(_panelWidth * 0.45f));
 
-                // Detail + timing
                 GUILayout.FlexibleSpace();
                 string detailColor = StatusHexColor(step.Status);
                 string timing = step.ElapsedMs > 0 ? $" <color=#{ColorUtility.ToHtmlStringRGB(Gray)}>({step.ElapsedMs}ms)</color>" : "";
@@ -684,8 +1344,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 GUILayout.EndHorizontal();
             }
 
-            if (needsScroll)
-                GUILayout.EndScrollView();
+            GUILayout.EndScrollView();
 
             // Summary
             if (_phase == TestPhase.Done)
