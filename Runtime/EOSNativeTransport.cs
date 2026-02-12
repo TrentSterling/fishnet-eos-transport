@@ -553,17 +553,22 @@ namespace FishNet.Transport.EOSNative
                 EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", "Created NetworkManager");
             }
 
-            // 2. Wire transport reference
-            var transportManager = networkManager.TransportManager;
+            // 2. Wire transport reference on TransportManager
+            // TransportManager is created in Awake(), so at Reset() time we must
+            // find it via GetComponent since the property isn't set yet.
+            var transportManager = networkManager.GetComponent<FishNet.Managing.Transporting.TransportManager>();
+            if (transportManager == null)
+                transportManager = networkManager.gameObject.AddComponent<FishNet.Managing.Transporting.TransportManager>();
             if (transportManager != null)
             {
-                // Use SerializedObject to set the transport reference
+                // The field is public "Transport", not "_transport"
                 var so = new SerializedObject(transportManager);
-                var transportProp = so.FindProperty("_transport");
+                var transportProp = so.FindProperty("Transport");
                 if (transportProp != null && transportProp.objectReferenceValue != this)
                 {
                     transportProp.objectReferenceValue = this;
                     so.ApplyModifiedProperties();
+                    UnityEditor.EditorUtility.SetDirty(transportManager);
                     EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", "Wired transport reference");
                 }
             }
