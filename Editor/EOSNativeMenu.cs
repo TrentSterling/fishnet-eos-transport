@@ -4,7 +4,6 @@ using UnityEditor.SceneManagement;
 using EOSNative;
 using EOSNative.Lobbies;
 using EOSNative.Voice;
-using FishNet.Object;
 using FishNet.Transport.EOSNative.Demo;
 using FishNet.Transport.EOSNative.Migration;
 
@@ -293,12 +292,11 @@ namespace FishNet.Transport.EOSNative.Editor
                 }
             }
 
-            // Add prefabs to DefaultPrefabObjects (FishNet's spawnable prefabs)
-            AddToSpawnablePrefabs(playerPath);
-            AddToSpawnablePrefabs(cratePath);
+            // FishNet's auto-generator detects NetworkObject prefabs automatically —
+            // no need to manually add to DefaultPrefabObjects.
 
             EditorUtility.DisplayDialog("Demo Prefabs Created",
-                $"Created:\n  - {playerPath}\n  - {cratePath}\n\nPlayerBall assigned to player spawner.\nBoth added to FishNet spawnable prefabs.",
+                $"Created:\n  - {playerPath}\n  - {cratePath}\n\nPlayerBall assigned to player spawner.\nFishNet auto-registers spawnable prefabs.",
                 "OK");
         }
 
@@ -385,38 +383,6 @@ namespace FishNet.Transport.EOSNative.Editor
             var wallMat = new Material(Shader.Find("Universal Render Pipeline/Lit") ?? Shader.Find("Standard"));
             wallMat.color = new Color(0.5f, 0.45f, 0.4f);
             wall.GetComponent<Renderer>().material = wallMat;
-        }
-
-        private static void AddToSpawnablePrefabs(string prefabPath)
-        {
-            var prefab = AssetDatabase.LoadAssetAtPath<NetworkObject>(prefabPath);
-            if (prefab == null) return;
-
-            // Find the DefaultPrefabObjects asset
-            var guids = AssetDatabase.FindAssets("t:DefaultPrefabObjects");
-            if (guids.Length == 0) return;
-
-            var dpoPath = AssetDatabase.GUIDToAssetPath(guids[0]);
-            var dpo = AssetDatabase.LoadAssetAtPath<FishNet.Managing.Object.DefaultPrefabObjects>(dpoPath);
-            if (dpo == null) return;
-
-            // Check if already added
-            for (int i = 0; i < dpo.GetObjectCount(); i++)
-            {
-                var existing = dpo.GetObject(false, i);
-                if (existing != null && existing.name == prefab.name)
-                    return; // Already in there
-            }
-
-            // Add via SerializedObject
-            var so = new SerializedObject(dpo);
-            var prefabsProp = so.FindProperty("_prefabs");
-            prefabsProp.arraySize++;
-            prefabsProp.GetArrayElementAtIndex(prefabsProp.arraySize - 1).objectReferenceValue = prefab;
-            so.ApplyModifiedProperties();
-            EditorUtility.SetDirty(dpo);
-
-            Debug.Log($"[EOSNativeMenu] Added {prefab.name} to FishNet spawnable prefabs.");
         }
 
         private static void EnsureFolder(string parent, string name)
