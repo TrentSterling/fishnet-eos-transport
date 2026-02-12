@@ -22,7 +22,7 @@ namespace FishNet.Transport.EOSNative.Editor
         public static void SetupScene()
         {
             // Check if transport already exists
-            var existingTransport = Object.FindAnyObjectByType<EOSNativeTransport>();
+            var existingTransport = UnityEngine.Object.FindAnyObjectByType<EOSNativeTransport>();
             if (existingTransport != null)
             {
                 Debug.Log("[EOSNativeMenu] EOSNativeTransport already exists. Re-running AutoSetup...");
@@ -128,7 +128,7 @@ namespace FishNet.Transport.EOSNative.Editor
             var warnings = new System.Collections.Generic.List<string>();
 
             // Check for EOSNativeTransport
-            var transport = Object.FindAnyObjectByType<EOSNativeTransport>();
+            var transport = UnityEngine.Object.FindAnyObjectByType<EOSNativeTransport>();
             if (transport == null)
             {
                 issues.Add("EOSNativeTransport not found in scene");
@@ -147,25 +147,25 @@ namespace FishNet.Transport.EOSNative.Editor
             }
 
             // Check for NetworkManager
-            var networkManager = Object.FindAnyObjectByType<FishNet.Managing.NetworkManager>();
+            var networkManager = UnityEngine.Object.FindAnyObjectByType<FishNet.Managing.NetworkManager>();
             if (networkManager == null)
                 issues.Add("NetworkManager not found in scene");
 
             // Check for EOSManager
-            var eosManager = Object.FindAnyObjectByType<EOSManager>();
+            var eosManager = UnityEngine.Object.FindAnyObjectByType<EOSManager>();
             if (eosManager == null)
                 issues.Add("EOSManager not found in scene");
 
             // Optional subsystems
-            var lobbyManager = Object.FindAnyObjectByType<EOSLobbyManager>();
+            var lobbyManager = UnityEngine.Object.FindAnyObjectByType<EOSLobbyManager>();
             if (lobbyManager == null)
                 warnings.Add("EOSLobbyManager not found (required for lobby features)");
 
-            var voiceManager = Object.FindAnyObjectByType<EOSVoiceManager>();
+            var voiceManager = UnityEngine.Object.FindAnyObjectByType<EOSVoiceManager>();
             if (voiceManager == null)
                 warnings.Add("EOSVoiceManager not found (required for voice features)");
 
-            var playerSpawner = Object.FindAnyObjectByType<HostMigrationPlayerSpawner>();
+            var playerSpawner = UnityEngine.Object.FindAnyObjectByType<HostMigrationPlayerSpawner>();
             if (playerSpawner == null)
                 warnings.Add("HostMigrationPlayerSpawner not found (required for player spawning)");
 
