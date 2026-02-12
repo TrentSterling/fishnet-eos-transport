@@ -1,6 +1,6 @@
 {
   "name": "com.tront.fishnet-eos-transport",
-  "version": "1.8.1",
+  "version": "1.8.2",
   "displayName": "FishNet EOS Transport",
   "description": "Thin FishNet transport layer using Epic Online Services (EOS) P2P. Features host migration, offline fallback, packet fragmentation, and security validation. Depends on eos-sdk for EOS access — no duplicated code.",
   "unity": "6000.0",

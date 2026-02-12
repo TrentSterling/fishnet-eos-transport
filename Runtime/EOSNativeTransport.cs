@@ -760,15 +760,19 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success)
             {
-                if (autoConnect && !string.IsNullOrEmpty(lobby.OwnerPuid))
+                if (autoConnect)
                 {
-                    RemoteProductUserId = lobby.OwnerPuid;
-                    StartClientOnly();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Joined lobby {roomCode}, connecting to host...");
-                }
-                else if (autoConnect)
-                {
-                    EOSDebugLogger.LogWarning(DebugCategory.Transport, "EOSNativeTransport", "Joined lobby but no host found!");
+                    string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
+                    if (!string.IsNullOrEmpty(ownerPuid))
+                    {
+                        RemoteProductUserId = ownerPuid;
+                        StartClientOnly();
+                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Joined lobby {roomCode}, connecting to host...");
+                    }
+                    else
+                    {
+                        EOSDebugLogger.LogWarning(DebugCategory.Transport, "EOSNativeTransport", "Joined lobby but no host found after retries!");
+                    }
                 }
                 else
                 {
@@ -798,15 +802,16 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success && autoConnect)
             {
-                if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
+                if (!string.IsNullOrEmpty(ownerPuid))
                 {
-                    RemoteProductUserId = lobby.OwnerPuid;
+                    RemoteProductUserId = ownerPuid;
                     StartClientOnly();
                     EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Joined lobby by name: {lobbyName} ({lobby.JoinCode})");
                 }
                 else
                 {
-                    EOSDebugLogger.LogWarning(DebugCategory.Transport, "EOSNativeTransport", "Joined lobby but no host found!");
+                    EOSDebugLogger.LogWarning(DebugCategory.Transport, "EOSNativeTransport", "Joined lobby but no host found after retries!");
                 }
             }
 
@@ -849,11 +854,15 @@ namespace FishNet.Transport.EOSNative
         {
             var (result, lobby) = await LobbyManager.QuickMatchAsync();
 
-            if (result == Result.Success && !string.IsNullOrEmpty(lobby.OwnerPuid))
+            if (result == Result.Success)
             {
-                RemoteProductUserId = lobby.OwnerPuid;
-                StartClientOnly();
-                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatch: Connected to {lobby.JoinCode}");
+                string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
+                if (!string.IsNullOrEmpty(ownerPuid))
+                {
+                    RemoteProductUserId = ownerPuid;
+                    StartClientOnly();
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatch: Connected to {lobby.JoinCode}");
+                }
             }
 
             return (result, lobby);
@@ -897,11 +906,15 @@ namespace FishNet.Transport.EOSNative
                     StartHost();
                     EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"➜ QuickMatchOrHost: Hosting {lobby.JoinCode}");
                 }
-                else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                else
                 {
-                    RemoteProductUserId = lobby.OwnerPuid;
-                    StartClientOnly();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"➜ QuickMatchOrHost: Joined {lobby.JoinCode}");
+                    string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
+                    if (!string.IsNullOrEmpty(ownerPuid))
+                    {
+                        RemoteProductUserId = ownerPuid;
+                        StartClientOnly();
+                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Joined {lobby.JoinCode}");
+                    }
                 }
             }
 
@@ -948,12 +961,15 @@ namespace FishNet.Transport.EOSNative
                     StartHost();
                     EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Hosting {lobby.JoinCode}");
                 }
-                else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                else
                 {
-                    RemoteProductUserId = lobby.OwnerPuid;
-                    StartClientOnly();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Joined {lobby.JoinCode}");
-                }
+                    string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
+                    if (!string.IsNullOrEmpty(ownerPuid))
+                    {
+                        RemoteProductUserId = ownerPuid;
+                        StartClientOnly();
+                        EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Joined {lobby.JoinCode}");
+                    }
             }
 
             return (result, lobby, didHost);
@@ -1128,6 +1144,31 @@ namespace FishNet.Transport.EOSNative
             var nm = GetComponent<NetworkManager>();
             if (nm == null) nm = FindAnyObjectByType<NetworkManager>();
             nm?.ClientManager.StartConnection();
+        }
+
+        /// <summary>
+        /// Resolves the lobby owner's PUID, retrying from live lobby data if not immediately available.
+        /// EOS may not populate the owner info in the local cache immediately after joining.
+        /// </summary>
+        private async Task<string> ResolveOwnerPuidAsync(string initialOwnerPuid)
+        {
+            if (!string.IsNullOrEmpty(initialOwnerPuid))
+                return initialOwnerPuid;
+
+            // OwnerPuid not available yet — retry from live CurrentLobby data
+            for (int i = 0; i < 10; i++)
+            {
+                await Task.Delay(200);
+                string ownerPuid = LobbyManager?.CurrentLobby.OwnerPuid;
+                if (!string.IsNullOrEmpty(ownerPuid))
+                {
+                    Debug.Log($"[EOSNativeTransport] OwnerPuid resolved after {(i + 1) * 200}ms: {ownerPuid.Substring(0, Math.Min(8, ownerPuid.Length))}...");
+                    return ownerPuid;
+                }
+            }
+
+            Debug.LogWarning("[EOSNativeTransport] Failed to resolve OwnerPuid after 2s of retries.");
+            return null;
         }
 
         #endregion
