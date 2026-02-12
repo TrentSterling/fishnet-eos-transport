@@ -773,7 +773,7 @@ namespace FishNet.Transport.EOSNative
                 return (Result.InvalidParameters, default);
             }
 
-            var (result, lobby) = await LobbyManager.JoinLobbyByNameAsync(lobbyName);
+            var (result, lobby) = await LobbyManager.JoinFirstMatchingAsync(new LobbySearchOptions().WithLobbyName(lobbyName));
 
             if (result == Result.Success && autoConnect)
             {
@@ -801,14 +801,10 @@ namespace FishNet.Transport.EOSNative
         /// <returns>Result and list of matching lobbies.</returns>
         public async Task<(Result result, List<LobbyData> lobbies)> SearchLobbiesByNameAsync(string searchTerm, bool exactMatch = false, uint maxResults = 10)
         {
-            if (exactMatch)
-            {
-                return await LobbyManager.SearchByNameAsync(searchTerm, maxResults);
-            }
-            else
-            {
-                return await LobbyManager.SearchByNameContainingAsync(searchTerm, maxResults);
-            }
+            var options = exactMatch
+                ? new LobbySearchOptions { MaxResults = maxResults }.WithLobbyName(searchTerm)
+                : new LobbySearchOptions { MaxResults = maxResults }.WithLobbyNameContaining(searchTerm);
+            return await LobbyManager.SearchLobbiesAsync(options);
         }
 
         /// <summary>
@@ -871,7 +867,7 @@ namespace FishNet.Transport.EOSNative
             if (string.IsNullOrEmpty(createOptions.BucketId))
                 createOptions.BucketId = _lobbyBucket;
 
-            var (result, lobby, didHost) = await LobbyManager.QuickMatchOrHostAsync(createOptions, searchOptions);
+            var (result, lobby, didHost) = await LobbyManager.QuickMatchOrHostAsync(createOptions);
 
             if (result == Result.Success)
             {
@@ -922,7 +918,7 @@ namespace FishNet.Transport.EOSNative
                 }
             }
 
-            var (result, lobby, didHost) = await LobbyManager.QuickMatchOrHostAsync(createOptions, searchOptions);
+            var (result, lobby, didHost) = await LobbyManager.QuickMatchOrHostAsync(createOptions);
 
             if (result == Result.Success)
             {

@@ -157,42 +157,43 @@ namespace FishNet.Transport.EOSNative.Migration
                 InstanceFinder.ClientManager.OnClientConnectionState += OnClientConnectionState;
             }
 
-            // Subscribe to spawn/despawn events to auto-track ALL NetworkObjects
-            if (InstanceFinder.ServerManager != null)
-            {
-                InstanceFinder.ServerManager.OnSpawnedObject += OnServerSpawnedObject;
-                InstanceFinder.ServerManager.OnDespawnedObject += OnServerDespawnedObject;
-            }
+            // Note: FishNet doesn't expose global spawn/despawn events on ServerManager.
+            // Instead, we scan ServerManager.Objects.Spawned when migration starts.
         }
 
         /// <summary>
         /// Called when any NetworkObject is spawned on the server.
         /// Auto-tracks it for migration unless it has DoNotMigrate.
         /// </summary>
-        private void OnServerSpawnedObject(NetworkObject nob)
+        /// <summary>
+        /// Scans all currently spawned NetworkObjects and populates _trackedObjects.
+        /// Called on-demand before saving states since FishNet doesn't expose global spawn/despawn events.
+        /// </summary>
+        private void ScanSpawnedObjects()
         {
-            if (nob == null) return;
+            _trackedObjects.Clear();
 
-            // Skip scene objects - they're handled separately
-            if (nob.IsSceneObject) return;
-
-            // Skip objects with DoNotMigrate component
-            if (nob.GetComponent<DoNotMigrate>() != null)
+            var spawned = InstanceFinder.ServerManager?.Objects?.Spawned;
+            if (spawned == null)
             {
-                Log($"Skipping auto-track for {nob.name} (has DoNotMigrate)");
-                return;
+                // Not server — try client's spawned objects for pre-save
+                spawned = InstanceFinder.ClientManager?.Objects?.Spawned;
             }
+            if (spawned == null) return;
 
-            // Auto-track this object
-            if (!_trackedObjects.Contains(nob))
+            foreach (var kvp in spawned)
             {
+                var nob = kvp.Value;
+                if (nob == null) continue;
+                if (nob.IsSceneObject) continue;
+                if (nob.GetComponent<DoNotMigrate>() != null) continue;
+
                 _trackedObjects.Add(nob);
 
                 // Also register the prefab if not already registered
                 string prefabName = nob.gameObject.name.Replace("(Clone)", "").Trim();
                 if (!_prefabDictionary.ContainsKey(prefabName))
                 {
-                    // Find the prefab from NetworkManager's spawnable prefabs
                     var spawnablePrefabs = InstanceFinder.NetworkManager?.SpawnablePrefabs;
                     if (spawnablePrefabs != null)
                     {
@@ -202,24 +203,14 @@ namespace FishNet.Transport.EOSNative.Migration
                             if (prefab != null && prefab.gameObject.name == prefabName)
                             {
                                 _prefabDictionary[prefabName] = prefab;
-                                Log($"Auto-registered prefab: {prefabName}");
                                 break;
                             }
                         }
                     }
                 }
-
-                Log($"Auto-tracking: {nob.name}");
             }
-        }
 
-        /// <summary>
-        /// Called when any NetworkObject is despawned on the server.
-        /// </summary>
-        private void OnServerDespawnedObject(NetworkObject nob)
-        {
-            if (nob == null) return;
-            _trackedObjects.Remove(nob);
+            Log($"Scanned {_trackedObjects.Count} spawned objects for migration tracking");
         }
 
         /// <summary>
@@ -248,11 +239,7 @@ namespace FishNet.Transport.EOSNative.Migration
                 InstanceFinder.ClientManager.OnClientConnectionState -= OnClientConnectionState;
             }
 
-            if (InstanceFinder.ServerManager != null)
-            {
-                InstanceFinder.ServerManager.OnSpawnedObject -= OnServerSpawnedObject;
-                InstanceFinder.ServerManager.OnDespawnedObject -= OnServerDespawnedObject;
-            }
+            // No global spawn events to unsubscribe — we use on-demand scanning
 
             if (_instance == this)
             {
@@ -269,6 +256,7 @@ namespace FishNet.Transport.EOSNative.Migration
             // We care about Stopping state - this fires BEFORE objects are despawned
             if (args.ConnectionState == LocalConnectionState.Stopping)
             {
+                ScanSpawnedObjects();
                 int totalObjects = _trackedObjects.Count + _migratableObjects.Count;
                 Log($"Client stopping - saving {totalObjects} objects preemptively");
 
@@ -596,6 +584,7 @@ namespace FishNet.Transport.EOSNative.Migration
                 return;
             }
 
+            ScanSpawnedObjects();
             int totalObjects = _trackedObjects.Count + _migratableObjects.Count;
             Log($"Saving object states... (auto-tracked: {_trackedObjects.Count}, legacy: {_migratableObjects.Count}, prefabs: {_prefabDictionary.Count})");
 
@@ -970,7 +959,7 @@ namespace FishNet.Transport.EOSNative.Migration
                             _pendingAutoRepossessions[state.OwnerPuid] = new List<NetworkObject>();
                         }
                         _pendingAutoRepossessions[state.OwnerPuid].Add(nob);
-                        go.SetActive(false);
+                        go.gameObject.SetActive(false);
                         Log($"Registered for repossession (auto): {state.PrefabName} for owner {state.OwnerPuid.Substring(0, 8)}...");
                     }
                     else
