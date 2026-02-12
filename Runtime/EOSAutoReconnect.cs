@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using EOSNative;
+using EOSNative.Lobbies;
 using UnityEngine;
 using FishNet.Managing;
 using FishNet.Transporting;
@@ -224,7 +225,7 @@ namespace FishNet.Transport.EOSNative
                 _isReconnecting = false;
                 _currentAttempt = 0;
 
-                var lobbyManager = Lobbies.EOSLobbyManager.Instance;
+                var lobbyManager = EOSLobbyManager.Instance;
                 if (lobbyManager != null && lobbyManager.IsInLobby)
                 {
                     _lastLobbyCode = lobbyManager.CurrentLobby.JoinCode;
@@ -390,47 +391,35 @@ namespace FishNet.Transport.EOSNative
 
         private IEnumerator HandleLateRejoin()
         {
-            // Check if game is in progress
-            var backfill = EOSBackfillManager.Instance;
-            if (backfill == null) yield break;
-
-            var jipResult = backfill.CanJoinInProgress();
-
-            // If reconnecting player has reservation, bypass JIP check
-            if (jipResult != JoinInProgressResult.Allowed && !_allowReconnectBypassJip)
+            // Late rejoin handling is driven by events — consumers subscribe to
+            // OnLateRejoinChoice and implement their own spectator/deny logic.
+            switch (_lateRejoinMode)
             {
-                switch (_lateRejoinMode)
-                {
-                    case LateRejoinMode.RejoinAsSpectator:
-                        if (EOSSpectatorMode.Instance != null)
-                        {
-                            EOSSpectatorMode.Instance.EnterSpectatorMode();
-                        }
-                        break;
+                case LateRejoinMode.RejoinAsPlayer:
+                    // Default — just rejoin normally
+                    break;
 
-                    case LateRejoinMode.AskUser:
-                        bool? choice = null;
-                        OnLateRejoinChoice?.Invoke((asPlayer) => choice = asPlayer);
+                case LateRejoinMode.RejoinAsSpectator:
+                    // Fire event so consumers can enter spectator mode
+                    OnLateRejoinChoice?.Invoke(_ => { });
+                    break;
 
-                        // Wait for user choice (with timeout)
-                        float timeout = 10f;
-                        while (choice == null && timeout > 0)
-                        {
-                            timeout -= Time.deltaTime;
-                            yield return null;
-                        }
+                case LateRejoinMode.AskUser:
+                    bool? choice = null;
+                    OnLateRejoinChoice?.Invoke(asPlayer => choice = asPlayer);
 
-                        if (choice == false && EOSSpectatorMode.Instance != null)
-                        {
-                            EOSSpectatorMode.Instance.EnterSpectatorMode();
-                        }
-                        break;
+                    // Wait for user choice (with timeout)
+                    float timeout = 10f;
+                    while (choice == null && timeout > 0)
+                    {
+                        timeout -= Time.deltaTime;
+                        yield return null;
+                    }
+                    break;
 
-                    case LateRejoinMode.Deny:
-                        // Disconnect again
-                        _transport?.Shutdown();
-                        yield break;
-                }
+                case LateRejoinMode.Deny:
+                    _transport?.Shutdown();
+                    yield break;
             }
         }
 
@@ -502,17 +491,11 @@ namespace FishNet.Transport.EOSNative
 
         private string GetPuidForConnection(NetworkConnection conn)
         {
-            // Try to get PUID from player registry
-            var registry = EOSPlayerRegistry.Instance;
-            if (registry == null) return null;
+            // Map FishNet connection to PUID via the transport's server
+            var transport = GetComponent<EOSNativeTransport>();
+            if (transport == null) return null;
 
-            foreach (var (puid, _) in registry.RecentlyPlayedWith)
-            {
-                // This is a simplified lookup - in practice you'd map connection to PUID
-                // through your player tracking system
-            }
-
-            return null;
+            return transport.GetPuidForConnection(conn.ClientId);
         }
 
         /// <summary>

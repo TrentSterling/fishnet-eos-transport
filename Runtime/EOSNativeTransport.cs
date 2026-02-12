@@ -644,32 +644,7 @@ namespace FishNet.Transport.EOSNative
                 }
             }
 
-            // 9. Add debug UI components
-            // Main UI (F1)
-            var nativeUI = GetComponent<EOSNativeUI>();
-            if (nativeUI == null)
-            {
-                nativeUI = gameObject.AddComponent<EOSNativeUI>();
-                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", "Added EOSNativeUI (F1 to toggle)");
-            }
-
-            // Voice debug panel (F3)
-            var voiceDebug = GetComponent<FishNet.Transport.EOSNative.DebugUI.EOSVoiceDebugPanel>();
-            if (voiceDebug == null)
-            {
-                voiceDebug = gameObject.AddComponent<FishNet.Transport.EOSNative.DebugUI.EOSVoiceDebugPanel>();
-                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", "Added EOSVoiceDebugPanel (F3 to toggle)");
-            }
-
-            // Network debug panel (F4)
-            var networkDebug = GetComponent<FishNet.Transport.EOSNative.DebugUI.EOSNetworkDebugPanel>();
-            if (networkDebug == null)
-            {
-                networkDebug = gameObject.AddComponent<FishNet.Transport.EOSNative.DebugUI.EOSNetworkDebugPanel>();
-                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", "Added EOSNetworkDebugPanel (F4 to toggle)");
-            }
-
-            // 10. Auto-assign SampleEOSConfig if available and _eosConfig is null
+            // 9. Auto-assign SampleEOSConfig if available and _eosConfig is null
             if (_eosConfig == null)
             {
                 var guids = AssetDatabase.FindAssets("SampleEOSConfig t:EOSConfig");

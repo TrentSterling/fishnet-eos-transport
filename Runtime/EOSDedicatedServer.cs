@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Linq;
 using EOSNative;
+using EOSNative.Lobbies;
 using UnityEngine;
 using FishNet.Managing;
 #if UNITY_EDITOR
@@ -248,7 +249,7 @@ namespace FishNet.Transport.EOSNative
 
         private async Awaitable StartServerAsync()
         {
-            var options = new Lobbies.LobbyCreateOptions
+            var options = new LobbyCreateOptions
             {
                 LobbyName = _lobbyName,
                 GameMode = _gameMode,
@@ -381,7 +382,7 @@ namespace FishNet.Transport.EOSNative
 
         private string BroadcastChatMessage(string message)
         {
-            var chatManager = FindAnyObjectByType<Lobbies.EOSLobbyChatManager>();
+            var chatManager = FindAnyObjectByType<EOSLobbyChatManager>();
             if (chatManager != null)
             {
                 chatManager.SendChatMessage($"[SERVER] {message}");

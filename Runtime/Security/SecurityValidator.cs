@@ -105,20 +105,8 @@ namespace FishNet.Transport.EOSNative.Security
         }
 
         /// <summary>
-        /// Check if a PUID is in the current lobby.
-        /// </summary>
-        public static bool IsPlayerInLobby(string puid)
-        {
-            if (string.IsNullOrEmpty(puid)) return false;
-
-            var registry = EOSPlayerRegistry.Instance;
-            if (registry == null) return false;
-
-            return registry.IsPlayerInLobby(puid);
-        }
-
-        /// <summary>
         /// Check if a PUID belongs to a connected player.
+        /// Uses the player registry to verify the player is known.
         /// </summary>
         public static bool IsConnectedPlayer(string puid)
         {
@@ -127,12 +115,12 @@ namespace FishNet.Transport.EOSNative.Security
             var registry = EOSPlayerRegistry.Instance;
             if (registry == null) return false;
 
-            // Check if player is in connected clients
-            var nm = InstanceFinder.NetworkManager;
-            if (nm == null || !nm.IsServerStarted) return false;
+            // Check if player is known to the registry
+            if (!registry.HasPlayer(puid)) return false;
 
-            // For P2P, check lobby membership
-            return IsPlayerInLobby(puid);
+            // Check if server is running
+            var nm = InstanceFinder.NetworkManager;
+            return nm != null && nm.IsServerStarted;
         }
 
         #endregion
@@ -153,7 +141,7 @@ namespace FishNet.Transport.EOSNative.Security
                 return (false, "Missing requester PUID");
 
             // Requester must be in lobby
-            if (!IsPlayerInLobby(requesterPuid))
+            if (!IsConnectedPlayer(requesterPuid))
                 return (false, "Requester not in lobby");
 
             // Rate limit check
@@ -182,7 +170,7 @@ namespace FishNet.Transport.EOSNative.Security
             if (string.IsNullOrEmpty(achievementId))
                 return (false, "Missing achievement ID");
 
-            if (!IsPlayerInLobby(requesterPuid))
+            if (!IsConnectedPlayer(requesterPuid))
                 return (false, "Requester not in lobby");
 
             if (IsAchievementRateLimited(requesterPuid))
@@ -209,10 +197,10 @@ namespace FishNet.Transport.EOSNative.Security
             if (fromPuid == toPuid)
                 return (false, "Cannot give feedback to self");
 
-            if (!IsPlayerInLobby(fromPuid))
+            if (!IsConnectedPlayer(fromPuid))
                 return (false, "Sender not in lobby");
 
-            if (!IsPlayerInLobby(toPuid))
+            if (!IsConnectedPlayer(toPuid))
                 return (false, "Target not in lobby");
 
             if (IsReputationRateLimited(fromPuid))
@@ -233,9 +221,9 @@ namespace FishNet.Transport.EOSNative.Security
         {
             if (string.IsNullOrEmpty(sessionSecret))
             {
-                // Generate a session secret from lobby ID if not provided
-                var transport = EOSNativeTransport.Instance;
-                sessionSecret = transport?.CurrentLobbyId ?? "default_secret";
+                // Generate a session secret from lobby data if not provided
+                var transport = UnityEngine.Object.FindAnyObjectByType<EOSNativeTransport>();
+                sessionSecret = transport?.CurrentLobby.LobbyId ?? "default_secret";
             }
 
             using var hmac = new HMACSHA256(Encoding.UTF8.GetBytes(sessionSecret));
