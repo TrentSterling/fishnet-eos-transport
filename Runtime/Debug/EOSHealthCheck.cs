@@ -943,34 +943,33 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             // Stress mode: migration verification
             if (_testMode == TestMode.Stress && joined)
             {
-                // Step 15: Migration Started
-                await RunStepWithWait("Migration Started", () =>
+                // Step 15: Migration (detect start OR already completed)
+                // IsMigrating is transient — may flip true→false within a single frame.
+                // So we also accept "already became server" as proof migration happened.
+                await RunStepWithWait("Migration", () =>
                 {
                     var hm = HostMigrationManager.Instance;
                     if (hm == null)
                         return (StepStatus.Fail, "No HostMigrationManager");
+
+                    // Still migrating — keep waiting for it to finish
                     if (hm.IsMigrating)
-                        return (StepStatus.Pass, "Migration detected");
+                        return (StepStatus.Running, "Migrating...");
+
+                    // Migration already completed (or was so fast we missed the flag)
+                    // — check if we became the server
+                    var serverState = _transport.GetConnectionState(true);
+                    if (serverState == LocalConnectionState.Started)
+                        return (StepStatus.Pass, "Migrated — now hosting");
+
+                    // Also check if we became lobby owner (migration happened at EOS level)
+                    if (_transport.IsInLobby && _transport.IsLobbyOwner)
+                        return (StepStatus.Pass, "Became lobby owner — migration complete");
+
                     return (StepStatus.Running, "Waiting for host to leave...");
                 }, _migrationTimeout);
 
-                // Step 16: Migration Complete
-                await RunStepWithWait("Migration Complete", () =>
-                {
-                    var hm = HostMigrationManager.Instance;
-                    if (hm == null)
-                        return (StepStatus.Fail, "No HostMigrationManager");
-                    if (!hm.IsMigrating)
-                    {
-                        var serverState = _transport.GetConnectionState(true);
-                        if (serverState == LocalConnectionState.Started)
-                            return (StepStatus.Pass, "Migrated — now hosting");
-                        return (StepStatus.Running, $"Migration done, server: {serverState}");
-                    }
-                    return (StepStatus.Running, "Migrating...");
-                }, _migrationTimeout);
-
-                // Step 17: Objects Survived
+                // Step 16: Objects Survived
                 await RunStep("Objects Survived", () =>
                 {
                     int count = EOSNetworkPlayer.PlayerCount;
@@ -979,7 +978,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                     return (StepStatus.Fail, "No players after migration");
                 });
 
-                // Step 18: Teardown
+                // Step 17: Teardown
                 await RunTeardownStep();
             }
             else if (joined)
