@@ -838,6 +838,7 @@ namespace FishNet.Transport.EOSNative
         /// </summary>
         public async Task LeaveLobbyAsync()
         {
+            UnsubscribeFromLobbyUpdateAutoConnect();
             StopHost();
 
             // Clear migration state to prevent stale data in future sessions
@@ -1154,6 +1155,7 @@ namespace FishNet.Transport.EOSNative
         /// <summary>
         /// Resolves the lobby owner's PUID, retrying from live lobby data if not immediately available.
         /// EOS may not populate the owner info in the local cache immediately after joining.
+        /// If still unavailable, sets up an event listener to auto-connect when the data arrives.
         /// </summary>
         private async Task<string> ResolveOwnerPuidAsync(string initialOwnerPuid)
         {
@@ -1172,8 +1174,45 @@ namespace FishNet.Transport.EOSNative
                 }
             }
 
-            Debug.LogWarning("[EOSNativeTransport] Failed to resolve OwnerPuid after 2s of retries.");
+            // Still not available — subscribe to lobby update event for deferred auto-connect
+            Debug.Log("[EOSNativeTransport] OwnerPuid not available yet after 2s. Waiting for lobby update...");
+            _pendingAutoConnect = true;
+            SubscribeToLobbyUpdateForAutoConnect();
             return null;
+        }
+
+        private bool _pendingAutoConnect;
+
+        private void SubscribeToLobbyUpdateForAutoConnect()
+        {
+            if (LobbyManager != null)
+            {
+                LobbyManager.OnLobbyUpdated -= OnLobbyUpdatedAutoConnect;
+                LobbyManager.OnLobbyUpdated += OnLobbyUpdatedAutoConnect;
+            }
+        }
+
+        private void UnsubscribeFromLobbyUpdateAutoConnect()
+        {
+            _pendingAutoConnect = false;
+            if (_lobbyManager != null)
+            {
+                _lobbyManager.OnLobbyUpdated -= OnLobbyUpdatedAutoConnect;
+            }
+        }
+
+        private void OnLobbyUpdatedAutoConnect(LobbyData lobbyData)
+        {
+            if (!_pendingAutoConnect) return;
+            if (string.IsNullOrEmpty(lobbyData.OwnerPuid)) return;
+            if (_clientState != LocalConnectionState.Stopped) return; // Already connecting/connected
+
+            Debug.Log($"[EOSNativeTransport] Auto-connecting to host (deferred): {lobbyData.OwnerPuid.Substring(0, Math.Min(8, lobbyData.OwnerPuid.Length))}...");
+            _pendingAutoConnect = false;
+            LobbyManager.OnLobbyUpdated -= OnLobbyUpdatedAutoConnect;
+
+            RemoteProductUserId = lobbyData.OwnerPuid;
+            StartClientOnly();
         }
 
         #endregion
@@ -1555,6 +1594,8 @@ namespace FishNet.Transport.EOSNative
 
         public override void Shutdown()
         {
+            UnsubscribeFromLobbyUpdateAutoConnect();
+
             if (_isOfflineMode)
             {
                 StopOffline();
