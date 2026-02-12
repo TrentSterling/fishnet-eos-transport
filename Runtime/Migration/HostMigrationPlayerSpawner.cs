@@ -34,7 +34,7 @@ namespace FishNet.Transport.EOSNative.Migration
 
         [Header("Spawn Settings")]
         [SerializeField]
-        private Vector3 _spawnPosition = new Vector3(0f, 2f, 0f);
+        private Vector3 _spawnPosition = new Vector3(0f, 5f, 0f);
 
         [SerializeField]
         private bool _useRandomSpawnOffset = true;

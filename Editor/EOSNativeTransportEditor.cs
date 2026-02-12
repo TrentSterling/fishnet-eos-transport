@@ -189,7 +189,7 @@ namespace FishNet.Transport.EOSNative.Editor
 
                 Color originalColor = GUI.backgroundColor;
                 GUI.backgroundColor = new Color(0.3f, 0.8f, 0.3f);
-                EditorGUILayout.LabelField(currentLobby.JoinCode ?? "????", _codeStyle, GUILayout.Width(60), GUILayout.Height(24));
+                EditorGUILayout.LabelField(currentLobby.JoinCode ?? "????", _codeStyle, GUILayout.Width(90), GUILayout.Height(24));
                 GUI.backgroundColor = originalColor;
 
                 if (GUILayout.Button("Copy", GUILayout.Width(50)))
@@ -248,11 +248,11 @@ namespace FishNet.Transport.EOSNative.Editor
                 // Not in a lobby - show Host/Join buttons
                 EditorGUILayout.BeginHorizontal();
                 EditorGUILayout.LabelField("Room:", GUILayout.Width(45));
-                _joinCode = EditorGUILayout.TextField(_joinCode, _codeStyle, GUILayout.Width(70), GUILayout.Height(24));
+                _joinCode = EditorGUILayout.TextField(_joinCode, _codeStyle, GUILayout.Width(90), GUILayout.Height(24));
 
-                // Limit to 4 characters
-                if (_joinCode.Length > 4)
-                    _joinCode = _joinCode.Substring(0, 4);
+                // Limit to 8 characters (join codes are 4-8 digits, default 6)
+                if (_joinCode.Length > 8)
+                    _joinCode = _joinCode.Substring(0, 8);
 
                 EditorGUILayout.LabelField("(blank = random)", EditorStyles.miniLabel);
                 EditorGUILayout.EndHorizontal();
@@ -274,7 +274,7 @@ namespace FishNet.Transport.EOSNative.Editor
                 GUI.backgroundColor = Color.white;
 
                 // JOIN button - joins lobby (auto-connects based on toggle)
-                GUI.enabled = !_lobbyOperationInProgress && _joinCode.Length == 4;
+                GUI.enabled = !_lobbyOperationInProgress && _joinCode.Length >= 4;
                 GUI.backgroundColor = new Color(0.5f, 0.7f, 0.9f);
                 if (GUILayout.Button("Join", GUILayout.Height(32)))
                 {
