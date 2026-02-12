@@ -1,8 +1,11 @@
 using UnityEngine;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using EOSNative;
 using EOSNative.Lobbies;
 using EOSNative.Voice;
+using FishNet.Object;
+using FishNet.Transport.EOSNative.Demo;
 using FishNet.Transport.EOSNative.Migration;
 
 namespace FishNet.Transport.EOSNative.Editor
@@ -205,5 +208,225 @@ namespace FishNet.Transport.EOSNative.Editor
         }
 
         #endregion
+
+        #region Demo Builder
+
+        /// <summary>
+        /// Creates demo prefabs (PlayerBall, Crate) in Assets/EOSDemo/Prefabs.
+        /// </summary>
+        [MenuItem(MenuRoot + "Build Demo Prefabs", priority = 20)]
+        public static void BuildDemoPrefabs()
+        {
+            // Create folder structure
+            EnsureFolder("Assets", "EOSDemo");
+            EnsureFolder("Assets/EOSDemo", "Prefabs");
+
+            string prefabDir = "Assets/EOSDemo/Prefabs";
+
+            // --- Player Ball Prefab ---
+            var playerGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            playerGo.name = "PlayerBallPrefab";
+            playerGo.transform.position = Vector3.zero;
+
+            // Physics
+            var rb = playerGo.GetComponent<Rigidbody>();
+            if (rb == null) rb = playerGo.AddComponent<Rigidbody>();
+            rb.mass = 1f;
+            rb.interpolation = RigidbodyInterpolation.Interpolate;
+            rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
+            rb.constraints = RigidbodyConstraints.FreezeRotation;
+
+            // FishNet
+            var nob = playerGo.AddComponent<NetworkObject>();
+
+            // Physics sync
+            var pnt = playerGo.AddComponent<PhysicsNetworkTransform>();
+            pnt.rigidbodyToTrack = rb;
+            pnt.claimOwnershipOnCollision = false; // player already owns it
+
+            // Game logic
+            playerGo.AddComponent<PlayerBall>();
+            playerGo.AddComponent<EOSNetworkPlayer>();
+            playerGo.AddComponent<HostMigratable>();
+
+            // Save prefab
+            string playerPath = $"{prefabDir}/PlayerBallPrefab.prefab";
+            var playerPrefab = PrefabUtility.SaveAsPrefabAsset(playerGo, playerPath);
+            UnityEngine.Object.DestroyImmediate(playerGo);
+            Debug.Log($"[EOSNativeMenu] Created player prefab: {playerPath}");
+
+            // --- Crate Prefab (physics object) ---
+            var crateGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            crateGo.name = "CratePrefab";
+            crateGo.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
+
+            var crateRb = crateGo.GetComponent<Rigidbody>();
+            if (crateRb == null) crateRb = crateGo.AddComponent<Rigidbody>();
+            crateRb.mass = 2f;
+
+            crateGo.AddComponent<NetworkObject>();
+            var cratePnt = crateGo.AddComponent<PhysicsNetworkTransform>();
+            cratePnt.rigidbodyToTrack = crateRb;
+            crateGo.AddComponent<NetworkPhysicsObject>();
+            crateGo.AddComponent<HostMigratable>();
+
+            string cratePath = $"{prefabDir}/CratePrefab.prefab";
+            PrefabUtility.SaveAsPrefabAsset(crateGo, cratePath);
+            UnityEngine.Object.DestroyImmediate(crateGo);
+            Debug.Log($"[EOSNativeMenu] Created crate prefab: {cratePath}");
+
+            AssetDatabase.SaveAssets();
+            AssetDatabase.Refresh();
+
+            // Wire player prefab to HostMigrationPlayerSpawner if it exists
+            var spawner = UnityEngine.Object.FindAnyObjectByType<HostMigrationPlayerSpawner>();
+            if (spawner != null)
+            {
+                var playerNob = AssetDatabase.LoadAssetAtPath<NetworkObject>(playerPath);
+                if (playerNob != null)
+                {
+                    var so = new SerializedObject(spawner);
+                    so.FindProperty("_playerPrefab").objectReferenceValue = playerNob;
+                    so.ApplyModifiedProperties();
+                    EditorUtility.SetDirty(spawner);
+                    Debug.Log("[EOSNativeMenu] Assigned PlayerBallPrefab to HostMigrationPlayerSpawner.");
+                }
+            }
+
+            // Add prefabs to DefaultPrefabObjects (FishNet's spawnable prefabs)
+            AddToSpawnablePrefabs(playerPath);
+            AddToSpawnablePrefabs(cratePath);
+
+            EditorUtility.DisplayDialog("Demo Prefabs Created",
+                $"Created:\n  - {playerPath}\n  - {cratePath}\n\nPlayerBall assigned to player spawner.\nBoth added to FishNet spawnable prefabs.",
+                "OK");
+        }
+
+        /// <summary>
+        /// Builds a complete demo scene with ground, camera, NetworkManager, and crates.
+        /// </summary>
+        [MenuItem(MenuRoot + "Build Demo Scene", priority = 21)]
+        public static void BuildDemoScene()
+        {
+            // Ensure prefabs exist first
+            if (!AssetDatabase.LoadAssetAtPath<NetworkObject>("Assets/EOSDemo/Prefabs/PlayerBallPrefab.prefab"))
+            {
+                if (EditorUtility.DisplayDialog("Prefabs Not Found",
+                    "Demo prefabs don't exist yet. Create them first?", "Create Prefabs", "Cancel"))
+                {
+                    BuildDemoPrefabs();
+                }
+                else return;
+            }
+
+            // Create new scene
+            var scene = EditorSceneManager.NewScene(NewSceneSetup.DefaultGameObjects, NewSceneMode.Single);
+
+            // Ground plane (scaled up)
+            var ground = GameObject.CreatePrimitive(PrimitiveType.Plane);
+            ground.name = "Ground";
+            ground.transform.localScale = new Vector3(5f, 1f, 5f);
+            var groundMat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+            groundMat.color = new Color(0.3f, 0.35f, 0.3f);
+            ground.GetComponent<Renderer>().material = groundMat;
+
+            // Walls to keep balls in
+            CreateWall("WallN", new Vector3(0f, 1f, 25f), new Vector3(50f, 2f, 0.5f));
+            CreateWall("WallS", new Vector3(0f, 1f, -25f), new Vector3(50f, 2f, 0.5f));
+            CreateWall("WallE", new Vector3(25f, 1f, 0f), new Vector3(0.5f, 2f, 50f));
+            CreateWall("WallW", new Vector3(-25f, 1f, 0f), new Vector3(0.5f, 2f, 50f));
+
+            // Camera — add SimpleCamera for player following
+            var cam = UnityEngine.Object.FindAnyObjectByType<Camera>();
+            if (cam != null)
+            {
+                cam.transform.position = new Vector3(0f, 15f, -10f);
+                cam.transform.rotation = Quaternion.Euler(55f, 0f, 0f);
+                cam.gameObject.AddComponent<SimpleCamera>();
+            }
+
+            // Setup NetworkManager via our existing SetupScene
+            SetupScene();
+
+            // Spawn some crates in the scene
+            var cratePrefab = AssetDatabase.LoadAssetAtPath<GameObject>("Assets/EOSDemo/Prefabs/CratePrefab.prefab");
+            if (cratePrefab != null)
+            {
+                for (int i = 0; i < 5; i++)
+                {
+                    float x = Random.Range(-8f, 8f);
+                    float z = Random.Range(-8f, 8f);
+                    var crate = (GameObject)PrefabUtility.InstantiatePrefab(cratePrefab);
+                    crate.transform.position = new Vector3(x, 1f, z);
+                    crate.name = $"Crate_{i}";
+                }
+            }
+
+            // Save scene
+            EnsureFolder("Assets", "EOSDemo");
+            EnsureFolder("Assets/EOSDemo", "Scenes");
+            string scenePath = "Assets/EOSDemo/Scenes/EOSDemoScene.unity";
+            EditorSceneManager.SaveScene(scene, scenePath);
+
+            Debug.Log($"[EOSNativeMenu] Demo scene created at {scenePath}");
+            EditorUtility.DisplayDialog("Demo Scene Created",
+                $"Scene saved to: {scenePath}\n\nIncludes:\n  - NetworkManager + EOS transport\n  - Ground + walls\n  - SimpleCamera (follows player)\n  - 5 physics crates\n\nPress Play, then click Host in the Inspector!",
+                "OK");
+        }
+
+        private static void CreateWall(string name, Vector3 position, Vector3 scale)
+        {
+            var wall = GameObject.CreatePrimitive(PrimitiveType.Cube);
+            wall.name = name;
+            wall.transform.position = position;
+            wall.transform.localScale = scale;
+            wall.isStatic = true;
+
+            var wallMat = new Material(Shader.Find("Universal Render Pipeline/Lit"));
+            wallMat.color = new Color(0.5f, 0.45f, 0.4f);
+            wall.GetComponent<Renderer>().material = wallMat;
+        }
+
+        private static void AddToSpawnablePrefabs(string prefabPath)
+        {
+            var prefab = AssetDatabase.LoadAssetAtPath<NetworkObject>(prefabPath);
+            if (prefab == null) return;
+
+            // Find the DefaultPrefabObjects asset
+            var guids = AssetDatabase.FindAssets("t:DefaultPrefabObjects");
+            if (guids.Length == 0) return;
+
+            var dpoPath = AssetDatabase.GUIDToAssetPath(guids[0]);
+            var dpo = AssetDatabase.LoadAssetAtPath<FishNet.Managing.Object.DefaultPrefabObjects>(dpoPath);
+            if (dpo == null) return;
+
+            // Check if already added
+            for (int i = 0; i < dpo.GetObjectCount(); i++)
+            {
+                var existing = dpo.GetObject(false, i);
+                if (existing != null && existing.name == prefab.name)
+                    return; // Already in there
+            }
+
+            // Add via SerializedObject
+            var so = new SerializedObject(dpo);
+            var prefabsProp = so.FindProperty("_prefabs");
+            prefabsProp.arraySize++;
+            prefabsProp.GetArrayElementAtIndex(prefabsProp.arraySize - 1).objectReferenceValue = prefab;
+            so.ApplyModifiedProperties();
+            EditorUtility.SetDirty(dpo);
+
+            Debug.Log($"[EOSNativeMenu] Added {prefab.name} to FishNet spawnable prefabs.");
+        }
+
+        private static void EnsureFolder(string parent, string name)
+        {
+            string path = $"{parent}/{name}";
+            if (!AssetDatabase.IsValidFolder(path))
+                AssetDatabase.CreateFolder(parent, name);
+        }
+
+        #endregion
     }
 }
+
