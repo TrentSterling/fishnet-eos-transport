@@ -217,7 +217,9 @@ namespace FishNet.Transport.EOSNative.Editor
 
                 // Show "Connect to Host" button if in lobby but not connected (and not the host)
                 var nm = GetNetworkManager();
-                bool isConnected = nm != null && (nm.IsServerStarted || nm.IsClientStarted);
+                bool isConnected = false;
+                try { isConnected = nm != null && (nm.IsServerStarted || nm.IsClientStarted); }
+                catch { /* NetworkManager not fully initialized */ }
                 if (!_transport.IsLobbyOwner && !isConnected && !string.IsNullOrEmpty(currentLobby.OwnerPuid))
                 {
                     GUI.enabled = !_lobbyOperationInProgress;

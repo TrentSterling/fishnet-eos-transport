@@ -32,6 +32,7 @@ namespace FishNet.Transport.EOSNative.Editor
             {
                 Debug.Log("[FishNet EOS] EOSNativeTransport already exists. Re-running AutoSetup...");
                 existingTransport.SendMessage("Reset", SendMessageOptions.DontRequireReceiver);
+                WireSpawnablePrefabs(existingTransport.gameObject);
                 Selection.activeGameObject = existingTransport.gameObject;
                 EditorGUIUtility.PingObject(existingTransport.gameObject);
                 return;
@@ -41,6 +42,9 @@ namespace FishNet.Transport.EOSNative.Editor
             Undo.RegisterCreatedObjectUndo(go, "Setup FishNet EOS Scene");
 
             go.AddComponent<EOSNativeTransport>();
+
+            // Ensure FishNet's NetworkManager has SpawnablePrefabs assigned
+            WireSpawnablePrefabs(go);
 
             Selection.activeGameObject = go;
             EditorGUIUtility.PingObject(go);
@@ -365,6 +369,39 @@ namespace FishNet.Transport.EOSNative.Editor
             string path = $"{parent}/{name}";
             if (!AssetDatabase.IsValidFolder(path))
                 AssetDatabase.CreateFolder(parent, name);
+        }
+
+        /// <summary>
+        /// Ensures FishNet's NetworkManager has DefaultPrefabObjects assigned.
+        /// Without this, NetworkManager.Start() NullRefs and nothing works.
+        /// </summary>
+        private static void WireSpawnablePrefabs(GameObject networkManagerGo)
+        {
+            var nm = networkManagerGo.GetComponent<FishNet.Managing.NetworkManager>();
+            if (nm == null) return;
+
+            // Find existing DefaultPrefabObjects asset
+            var guids = AssetDatabase.FindAssets("t:DefaultPrefabObjects");
+            if (guids.Length == 0)
+            {
+                // Trigger FishNet's generator to create it
+                Debug.Log("[FishNet EOS] DefaultPrefabObjects not found. FishNet will create it on next import.");
+                return;
+            }
+
+            var path = AssetDatabase.GUIDToAssetPath(guids[0]);
+            var dpo = AssetDatabase.LoadAssetAtPath<ScriptableObject>(path);
+            if (dpo == null) return;
+
+            var so = new SerializedObject(nm);
+            var prop = so.FindProperty("_spawnablePrefabs");
+            if (prop != null && prop.objectReferenceValue == null)
+            {
+                prop.objectReferenceValue = dpo;
+                so.ApplyModifiedProperties();
+                EditorUtility.SetDirty(nm);
+                Debug.Log($"[FishNet EOS] Assigned DefaultPrefabObjects to NetworkManager.");
+            }
         }
 
         #endregion
