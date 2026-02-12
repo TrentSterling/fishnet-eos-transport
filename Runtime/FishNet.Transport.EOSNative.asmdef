@@ -1,0 +1,19 @@
+{
+    "name": "FishNet.Transport.EOSNative",
+    "rootNamespace": "FishNet.Transport.EOSNative",
+    "references": [
+        "Epic.OnlineServices",
+        "EOSNative",
+        "FishNet.Runtime",
+        "Unity.InputSystem"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
