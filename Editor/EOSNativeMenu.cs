@@ -165,7 +165,7 @@ namespace FishNet.Transport.EOSNative.Editor
 
             var rb = playerGo.GetComponent<Rigidbody>();
             if (rb == null) rb = playerGo.AddComponent<Rigidbody>();
-            rb.mass = 1f;
+            rb.mass = 10f;
             rb.interpolation = RigidbodyInterpolation.Interpolate;
             rb.collisionDetectionMode = CollisionDetectionMode.Continuous;
             rb.constraints = RigidbodyConstraints.FreezeRotation;
