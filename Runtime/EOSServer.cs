@@ -133,8 +133,11 @@ namespace FishNet.Transport.EOSNative
 
         public bool Start(string socketName, int maxClients)
         {
+            Debug.Log($"[EOSServer] Start(socket={socketName}, max={maxClients}) - P2P={P2P != null}, LocalUserId={LocalUserId}");
+
             if (P2P == null || LocalUserId == null)
             {
+                Debug.LogError($"[EOSServer] Cannot start: P2P={P2P != null}, LocalUserId={LocalUserId}. EOSManager.Instance={EOSManager.Instance != null}");
                 EOSDebugLogger.LogError("EOSServer", "P2P interface or LocalUserId not available.");
                 return false;
             }

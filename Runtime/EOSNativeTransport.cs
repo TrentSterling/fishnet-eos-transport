@@ -396,6 +396,7 @@ namespace FishNet.Transport.EOSNative
         public override void Initialize(NetworkManager networkManager, int transportIndex)
         {
             base.Initialize(networkManager, transportIndex);
+            Debug.Log($"[EOSNativeTransport] Initialize() called by FishNet. NetworkManager={networkManager.name}, transportIndex={transportIndex}");
         }
 
         private async void Start()
@@ -721,9 +722,18 @@ namespace FishNet.Transport.EOSNative
 
             var (result, lobby) = await LobbyManager.CreateLobbyAsync(options);
 
+            Debug.Log($"[EOSNativeTransport] HostLobbyAsync - CreateLobby result: {result}, JoinCode: {lobby.JoinCode}");
+
             if (result == Result.Success)
             {
-                StartHost();
+                try
+                {
+                    StartHost();
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[EOSNativeTransport] StartHost() threw exception: {ex}");
+                }
                 EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Hosting lobby: {lobby.JoinCode} (Mode: {lobby.GameMode ?? "default"}, Map: {lobby.Map ?? "default"})");
             }
 
@@ -1057,10 +1067,28 @@ namespace FishNet.Transport.EOSNative
         {
             var nm = GetComponent<NetworkManager>();
             if (nm == null) nm = FindAnyObjectByType<NetworkManager>();
-            if (nm == null) return;
+            if (nm == null)
+            {
+                Debug.LogError("[EOSNativeTransport] StartHost() failed: NetworkManager not found!");
+                return;
+            }
 
-            nm.ServerManager.StartConnection();
-            nm.ClientManager.StartConnection();
+            // Verify the transport chain is wired correctly
+            var tmTransport = nm.TransportManager?.Transport;
+            if (tmTransport != this)
+            {
+                Debug.LogWarning($"[EOSNativeTransport] Transport mismatch! TransportManager.Transport={tmTransport?.GetType().Name ?? "null"}, expected EOSNativeTransport. Fixing...");
+                if (nm.TransportManager != null)
+                    nm.TransportManager.Transport = this;
+            }
+
+            Debug.Log($"[EOSNativeTransport] StartHost() - starting server and client. EOS logged in: {EOSManager.Instance?.IsLoggedIn}, offline: {_isOfflineMode}");
+
+            bool serverOk = nm.ServerManager.StartConnection();
+            Debug.Log($"[EOSNativeTransport] StartHost() - ServerManager.StartConnection() returned {serverOk}");
+
+            bool clientOk = nm.ClientManager.StartConnection();
+            Debug.Log($"[EOSNativeTransport] StartHost() - ClientManager.StartConnection() returned {clientOk}");
         }
 
         /// <summary>
@@ -1234,9 +1262,12 @@ namespace FishNet.Transport.EOSNative
 
         public override bool StartConnection(bool server)
         {
+            Debug.Log($"[EOSNativeTransport] StartConnection(server={server}) called. offlineMode={_isOfflineMode}, offlineFallback={_offlineFallback}");
+
             // If already in offline mode, route to offline
             if (_isOfflineMode)
             {
+                Debug.Log($"[EOSNativeTransport] Routing to offline {(server ? "server" : "client")}");
                 if (server)
                 {
                     return StartOfflineServer();
@@ -1248,9 +1279,12 @@ namespace FishNet.Transport.EOSNative
             }
 
             // Check EOS availability
-            bool eosAvailable = EOSManager.Instance != null &&
-                                EOSManager.Instance.IsInitialized &&
-                                EOSManager.Instance.IsLoggedIn;
+            bool eosInstanceExists = EOSManager.Instance != null;
+            bool eosInitialized = eosInstanceExists && EOSManager.Instance.IsInitialized;
+            bool eosLoggedIn = eosInitialized && EOSManager.Instance.IsLoggedIn;
+            bool eosAvailable = eosInstanceExists && eosInitialized && eosLoggedIn;
+
+            Debug.Log($"[EOSNativeTransport] EOS state: instance={eosInstanceExists}, init={eosInitialized}, login={eosLoggedIn}, available={eosAvailable}");
 
             if (!eosAvailable)
             {
@@ -1269,13 +1303,13 @@ namespace FishNet.Transport.EOSNative
                 }
                 else
                 {
-                    if (EOSManager.Instance == null || !EOSManager.Instance.IsInitialized)
+                    if (!eosInstanceExists || !eosInitialized)
                     {
-                        NetworkManager.LogError("[EOSNativeTransport] EOS is not initialized. Call EOSManager.Instance.Initialize() first, or enable OfflineFallback.");
+                        Debug.LogError("[EOSNativeTransport] EOS is not initialized. Call EOSManager.Instance.Initialize() first, or enable OfflineFallback.");
                     }
                     else
                     {
-                        NetworkManager.LogError("[EOSNativeTransport] Not logged in to EOS. Call EOSManager.Instance.LoginWithDeviceTokenAsync() first, or enable OfflineFallback.");
+                        Debug.LogError("[EOSNativeTransport] Not logged in to EOS. Call EOSManager.Instance.LoginWithDeviceTokenAsync() first, or enable OfflineFallback.");
                     }
                     return false;
                 }
@@ -1283,16 +1317,24 @@ namespace FishNet.Transport.EOSNative
 
             if (server)
             {
-                return StartServer();
+                Debug.Log("[EOSNativeTransport] Calling StartServer()...");
+                bool result = StartServer();
+                Debug.Log($"[EOSNativeTransport] StartServer() returned {result}. ServerState={_serverState}");
+                return result;
             }
             else
             {
-                return StartClient();
+                Debug.Log("[EOSNativeTransport] Calling StartClient()...");
+                bool result = StartClient();
+                Debug.Log($"[EOSNativeTransport] StartClient() returned {result}. ClientState={_clientState}");
+                return result;
             }
         }
 
         private bool StartServer()
         {
+            Debug.Log($"[EOSNativeTransport] StartServer() - current state: {_serverState}, P2P={EOSManager.Instance?.P2PInterface != null}, LocalUser={EOSManager.Instance?.LocalProductUserId}");
+
             if (_serverState != LocalConnectionState.Stopped)
             {
                 NetworkManager.LogWarning("[EOSNativeTransport] Server is already running or starting.");
@@ -1308,6 +1350,7 @@ namespace FishNet.Transport.EOSNative
             _server.SetHeartbeatTimeout(_heartbeatTimeout);
             _server.CheckSanctionsBeforeAccept = _checkSanctionsBeforeAccept;
             bool success = _server.Start(_socketName, _maxClients);
+            Debug.Log($"[EOSNativeTransport] EOSServer.Start() returned {success}");
 
             if (success)
             {
