@@ -970,6 +970,7 @@ namespace FishNet.Transport.EOSNative
                         StartClientOnly();
                         EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" QuickMatchOrHost: Joined {lobby.JoinCode}");
                     }
+                }
             }
 
             return (result, lobby, didHost);
@@ -982,11 +983,15 @@ namespace FishNet.Transport.EOSNative
         {
             var (result, lobby) = await LobbyManager.JoinByGameModeAsync(gameMode);
 
-            if (result == Result.Success && !string.IsNullOrEmpty(lobby.OwnerPuid))
+            if (result == Result.Success)
             {
-                RemoteProductUserId = lobby.OwnerPuid;
-                StartClientOnly();
-                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" JoinByGameMode({gameMode}): Connected to {lobby.JoinCode}");
+                string ownerPuid = await ResolveOwnerPuidAsync(lobby.OwnerPuid);
+                if (!string.IsNullOrEmpty(ownerPuid))
+                {
+                    RemoteProductUserId = ownerPuid;
+                    StartClientOnly();
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" JoinByGameMode({gameMode}): Connected to {lobby.JoinCode}");
+                }
             }
 
             return (result, lobby);
