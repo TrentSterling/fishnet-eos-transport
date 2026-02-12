@@ -176,32 +176,43 @@ namespace FishNet.Transport.EOSNative.Editor
             playerGo.AddComponent<HostMigratable>();
 
             string playerPath = $"{prefabDir}/PlayerBallPrefab.prefab";
-            PrefabUtility.SaveAsPrefabAsset(playerGo, playerPath);
-            UnityEngine.Object.DestroyImmediate(playerGo);
-            Debug.Log($"[FishNet EOS] Created player prefab: {playerPath}");
-
-            // --- Crate Prefab ---
-            var crateGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
-            crateGo.name = "CratePrefab";
-            crateGo.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
-
-            var crateRb = crateGo.GetComponent<Rigidbody>();
-            if (crateRb == null) crateRb = crateGo.AddComponent<Rigidbody>();
-            crateRb.mass = 2f;
-
-            crateGo.AddComponent<NetworkObject>();
-            var cratePnt = crateGo.AddComponent<PhysicsNetworkTransform>();
-            cratePnt.rigidbodyToTrack = crateRb;
-            crateGo.AddComponent<NetworkPhysicsObject>();
-            crateGo.AddComponent<HostMigratable>();
-
             string cratePath = $"{prefabDir}/CratePrefab.prefab";
-            PrefabUtility.SaveAsPrefabAsset(crateGo, cratePath);
-            UnityEngine.Object.DestroyImmediate(crateGo);
-            Debug.Log($"[FishNet EOS] Created crate prefab: {cratePath}");
+
+            // Batch asset operations to prevent FishNet's PrefabCollectionGenerator
+            // from running between saves (causes hash-of-0 collision).
+            AssetDatabase.StartAssetEditing();
+            try
+            {
+                PrefabUtility.SaveAsPrefabAsset(playerGo, playerPath);
+                UnityEngine.Object.DestroyImmediate(playerGo);
+
+                // --- Crate Prefab ---
+                var crateGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                crateGo.name = "CratePrefab";
+                crateGo.transform.localScale = new Vector3(0.8f, 0.8f, 0.8f);
+
+                var crateRb = crateGo.GetComponent<Rigidbody>();
+                if (crateRb == null) crateRb = crateGo.AddComponent<Rigidbody>();
+                crateRb.mass = 2f;
+
+                crateGo.AddComponent<NetworkObject>();
+                var cratePnt = crateGo.AddComponent<PhysicsNetworkTransform>();
+                cratePnt.rigidbodyToTrack = crateRb;
+                crateGo.AddComponent<NetworkPhysicsObject>();
+                crateGo.AddComponent<HostMigratable>();
+
+                PrefabUtility.SaveAsPrefabAsset(crateGo, cratePath);
+                UnityEngine.Object.DestroyImmediate(crateGo);
+            }
+            finally
+            {
+                AssetDatabase.StopAssetEditing();
+            }
 
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
+
+            Debug.Log($"[FishNet EOS] Created prefabs: {playerPath}, {cratePath}");
 
             // Wire player prefab to spawner if it exists
             var spawner = UnityEngine.Object.FindAnyObjectByType<HostMigrationPlayerSpawner>();
