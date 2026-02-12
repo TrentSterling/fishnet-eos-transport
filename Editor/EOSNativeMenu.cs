@@ -216,6 +216,10 @@ namespace FishNet.Transport.EOSNative.Editor
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
 
+            // Trigger FishNet's prefab generator to set AssetPathHash on all NetworkObject prefabs.
+            // Without this, programmatically created prefabs get hash 0 and FishNet errors on play.
+            EditorApplication.ExecuteMenuItem("Tools/Fish-Networking/Utility/Refresh Default Prefabs");
+
             Debug.Log($"[FishNet EOS] Created prefabs: {playerPath}, {cratePath}");
 
             // Wire player prefab to spawner if it exists
