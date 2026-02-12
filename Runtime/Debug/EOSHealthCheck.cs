@@ -14,12 +14,43 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 {
     /// <summary>
     /// Automated runtime health check for the EOS + FishNet stack.
-    /// Drop on any GameObject. Press F11 to toggle the panel.
-    /// Press "Run" to execute a full self-test: init → login → host lobby → verify FishNet → teardown.
+    /// Auto-attaches to the EOSNativeTransport or EOSManager GameObject at runtime.
+    /// No manual setup needed — just have the package imported.
+    /// Press F11 to toggle the panel, press "Run" to execute a full self-test.
     /// Uses OnGUI — no Canvas or prefab setup needed.
     /// </summary>
     public class EOSHealthCheck : MonoBehaviour
     {
+        #region Auto-Create
+
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        private static void AutoCreate()
+        {
+            // Don't double-create
+            if (FindAnyObjectByType<EOSHealthCheck>() != null)
+                return;
+
+            // Attach to transport GameObject if available
+            var transport = FindAnyObjectByType<EOSNativeTransport>();
+            if (transport != null)
+            {
+                transport.gameObject.AddComponent<EOSHealthCheck>();
+                return;
+            }
+
+            // Fallback: attach to EOSManager
+            var eosManager = FindAnyObjectByType<EOSManager>();
+            if (eosManager != null)
+            {
+                eosManager.gameObject.AddComponent<EOSHealthCheck>();
+                return;
+            }
+
+            // Neither found — skip silently, nothing to health-check
+        }
+
+        #endregion
+
         #region Types
 
         public enum StepStatus { Pending, Running, Pass, Fail, Skipped }
