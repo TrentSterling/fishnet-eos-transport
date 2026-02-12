@@ -72,7 +72,15 @@ namespace FishNet.Transport.EOSNative
         /// <summary>
         /// This player's display name.
         /// </summary>
-        public string DisplayName => !string.IsNullOrEmpty(_displayName.Value) ? _displayName.Value : $"Player {OwnerId}";
+        public string DisplayName
+        {
+            get
+            {
+                if (!string.IsNullOrEmpty(_displayName.Value)) return _displayName.Value;
+                try { return $"Player {OwnerId}"; }
+                catch { return "Player ?"; }
+            }
+        }
 
         /// <summary>
         /// Short PUID for display (first 8 chars).
@@ -246,6 +254,8 @@ namespace FishNet.Transport.EOSNative
         public override void OnInspectorGUI()
         {
             DrawDefaultInspector();
+
+            if (!Application.isPlaying) return;
 
             var player = (EOSNetworkPlayer)target;
 
