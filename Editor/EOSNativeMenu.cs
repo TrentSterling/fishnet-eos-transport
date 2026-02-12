@@ -4,6 +4,7 @@ using UnityEditor.SceneManagement;
 using EOSNative;
 using EOSNative.Lobbies;
 using EOSNative.Voice;
+using FishNet.Object;
 using FishNet.Transport.EOSNative.Demo;
 using FishNet.Transport.EOSNative.Migration;
 
