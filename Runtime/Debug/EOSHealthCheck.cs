@@ -943,7 +943,36 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             // Stress mode: migration verification
             if (_testMode == TestMode.Stress && joined)
             {
-                // Step 15: Migration (detect start OR already completed)
+                // Snapshot locals for SyncVar verification
+                string snapshotPuid = null;
+                string snapshotName = null;
+                Color snapshotColor = Color.clear;
+
+                // Step 15: Pre-Migration Snapshot
+                await RunStep("Pre-Migration Snapshot", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    if (local == null)
+                        return (StepStatus.Fail, "No local player");
+
+                    snapshotPuid = local.Puid;
+                    snapshotName = local.DisplayName;
+
+                    var renderer = local.GetComponent<Renderer>();
+                    if (renderer != null && renderer.material != null)
+                        snapshotColor = renderer.material.color;
+
+                    bool hasPuid = !string.IsNullOrEmpty(snapshotPuid);
+                    bool hasColor = snapshotColor != Color.clear;
+                    string colorHex = hasColor ? $"#{ColorUtility.ToHtmlStringRGB(snapshotColor)}" : "none";
+
+                    if (!hasPuid)
+                        return (StepStatus.Fail, "PUID is empty");
+
+                    return (StepStatus.Pass, $"PUID: {Truncate(snapshotPuid, 12)}, Color: {colorHex}");
+                });
+
+                // Step 16: Migration (detect start OR already completed)
                 // IsMigrating is transient — may flip true→false within a single frame.
                 // So we also accept "already became server" as proof migration happened.
                 await RunStepWithWait("Migration", () =>
@@ -969,7 +998,66 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                     return (StepStatus.Running, "Waiting for host to leave...");
                 }, _migrationTimeout);
 
-                // Step 16: Objects Survived
+                // Step 17: SyncVars Survived
+                await RunStep("SyncVars Survived", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    if (local == null)
+                        return (StepStatus.Fail, "No local player after migration");
+
+                    var results = new List<string>();
+                    bool allMatch = true;
+
+                    // PUID
+                    if (snapshotPuid != null)
+                    {
+                        if (local.Puid == snapshotPuid)
+                            results.Add("PUID:OK");
+                        else
+                        {
+                            results.Add($"PUID:MISMATCH({Truncate(local.Puid, 8)})");
+                            allMatch = false;
+                        }
+                    }
+
+                    // DisplayName
+                    if (snapshotName != null)
+                    {
+                        if (local.DisplayName == snapshotName)
+                            results.Add("Name:OK");
+                        else
+                        {
+                            results.Add($"Name:MISMATCH({local.DisplayName})");
+                            allMatch = false;
+                        }
+                    }
+
+                    // Color
+                    if (snapshotColor != Color.clear)
+                    {
+                        var renderer = local.GetComponent<Renderer>();
+                        Color currentColor = (renderer != null && renderer.material != null)
+                            ? renderer.material.color
+                            : Color.clear;
+
+                        bool colorMatch = Mathf.Abs(currentColor.r - snapshotColor.r) < 0.01f
+                                       && Mathf.Abs(currentColor.g - snapshotColor.g) < 0.01f
+                                       && Mathf.Abs(currentColor.b - snapshotColor.b) < 0.01f;
+
+                        if (colorMatch)
+                            results.Add("Color:OK");
+                        else
+                        {
+                            results.Add($"Color:MISMATCH(#{ColorUtility.ToHtmlStringRGB(currentColor)})");
+                            allMatch = false;
+                        }
+                    }
+
+                    string detail = string.Join(", ", results);
+                    return allMatch ? (StepStatus.Pass, detail) : (StepStatus.Fail, detail);
+                });
+
+                // Step 18: Objects Survived
                 await RunStep("Objects Survived", () =>
                 {
                     int count = EOSNetworkPlayer.PlayerCount;
@@ -978,7 +1066,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                     return (StepStatus.Fail, "No players after migration");
                 });
 
-                // Step 17: Teardown
+                // Step 19: Teardown
                 await RunTeardownStep();
             }
             else if (joined)
