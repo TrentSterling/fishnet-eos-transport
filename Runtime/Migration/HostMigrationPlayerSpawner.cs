@@ -4,6 +4,7 @@ using FishNet;
 using FishNet.Connection;
 using FishNet.Managing;
 using FishNet.Object;
+using FishNet.Transporting;
 using EOSNative;
 using EOSNative.Logging;
 using UnityEngine;
@@ -98,7 +99,7 @@ namespace FishNet.Transport.EOSNative.Migration
         /// </summary>
         private void OnServerConnectionStateChanged(ServerConnectionStateArgs args)
         {
-            if (args.ConnectionState == FishNet.Transporting.LocalConnectionState.Stopped)
+            if (args.ConnectionState == LocalConnectionState.Stopped)
             {
                 _spawnedConnections.Clear();
             }
