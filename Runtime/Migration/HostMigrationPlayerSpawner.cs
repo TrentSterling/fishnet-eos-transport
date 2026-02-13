@@ -65,6 +65,7 @@ namespace FishNet.Transport.EOSNative.Migration
         #region Private Fields
 
         private NetworkManager _networkManager;
+        private readonly HashSet<int> _spawnedConnections = new HashSet<int>();
 
         #endregion
 
@@ -80,6 +81,7 @@ namespace FishNet.Transport.EOSNative.Migration
             }
 
             _networkManager.SceneManager.OnClientLoadedStartScenes += OnClientLoadedStartScenes;
+            _networkManager.ServerManager.OnServerConnectionState += OnServerConnectionStateChanged;
         }
 
         private void OnDestroy()
@@ -87,6 +89,18 @@ namespace FishNet.Transport.EOSNative.Migration
             if (_networkManager != null)
             {
                 _networkManager.SceneManager.OnClientLoadedStartScenes -= OnClientLoadedStartScenes;
+                _networkManager.ServerManager.OnServerConnectionState -= OnServerConnectionStateChanged;
+            }
+        }
+
+        /// <summary>
+        /// Clear spawn tracking when server stops so fresh spawns work on next start.
+        /// </summary>
+        private void OnServerConnectionStateChanged(ServerConnectionStateArgs args)
+        {
+            if (args.ConnectionState == FishNet.Transporting.LocalConnectionState.Stopped)
+            {
+                _spawnedConnections.Clear();
             }
         }
 
@@ -97,6 +111,13 @@ namespace FishNet.Transport.EOSNative.Migration
         private void OnClientLoadedStartScenes(NetworkConnection conn, bool asServer)
         {
             if (!asServer) return;
+
+            // Guard against duplicate spawns (event can fire multiple times per connection)
+            if (_spawnedConnections.Contains(conn.ClientId))
+            {
+                Log($"Ignoring duplicate OnClientLoadedStartScenes for connection {conn.ClientId}");
+                return;
+            }
 
             // Get the owner's PUID from the connection address
             string ownerPuid = conn.GetAddress();
@@ -112,6 +133,7 @@ namespace FishNet.Transport.EOSNative.Migration
             // If still no PUID (first-time host before EOS login), spawn new player
             if (string.IsNullOrEmpty(ownerPuid))
             {
+                _spawnedConnections.Add(conn.ClientId);
                 SpawnNewPlayer(conn);
                 return;
             }
@@ -175,10 +197,12 @@ namespace FishNet.Transport.EOSNative.Migration
             // If any repossessions occurred, don't spawn new player
             if (hadLegacyRepossessions || hadAutoRepossessions)
             {
+                _spawnedConnections.Add(conn.ClientId);
                 return;
             }
 
             // No migrated objects - spawn fresh player
+            _spawnedConnections.Add(conn.ClientId);
             SpawnNewPlayer(conn);
         }
 

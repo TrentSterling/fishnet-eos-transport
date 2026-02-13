@@ -840,10 +840,22 @@ namespace FishNet.Transport.EOSNative
 
         /// <summary>
         /// Leaves the current lobby and stops all connections.
+        /// Waits for transport to fully stop before leaving the lobby.
         /// </summary>
         public async Task LeaveLobbyAsync()
         {
             StopHost();
+
+            // Wait for transport to actually reach Stopped state
+            // StopHost goes through FishNet's managers which may defer to next frame
+            int maxWaitMs = 2000;
+            int waited = 0;
+            while (waited < maxWaitMs &&
+                   (_clientState != LocalConnectionState.Stopped || _serverState != LocalConnectionState.Stopped))
+            {
+                await Task.Delay(50);
+                waited += 50;
+            }
 
             // Clear migration state to prevent stale data in future sessions
             HostMigrationManager.Instance?.ClearMigrationState();
