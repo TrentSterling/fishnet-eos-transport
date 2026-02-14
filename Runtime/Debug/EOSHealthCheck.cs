@@ -26,15 +26,12 @@ namespace FishNet.Transport.EOSNative.Diagnostics
     {
         #region Auto-Create
 
-        /// <summary>
-        /// Set to false before scene load to prevent automatic creation of the health check UI.
-        /// </summary>
-        public static bool AutoCreateEnabled = true;
-
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoCreate()
         {
-            if (!AutoCreateEnabled) return;
+            // Gated by EOSManager.EnableHealthCheckUI (toggle on the EOSManager component)
+            var eosManager = FindAnyObjectByType<EOSManager>();
+            if (eosManager == null || !eosManager.EnableHealthCheckUI) return;
 
             if (FindAnyObjectByType<EOSHealthCheck>() != null)
                 return;
@@ -46,12 +43,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return;
             }
 
-            var eosManager = FindAnyObjectByType<EOSManager>();
-            if (eosManager != null)
-            {
-                eosManager.gameObject.AddComponent<EOSHealthCheck>();
-                return;
-            }
+            eosManager.gameObject.AddComponent<EOSHealthCheck>();
         }
 
         #endregion
