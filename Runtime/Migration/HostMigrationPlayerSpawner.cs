@@ -203,8 +203,12 @@ namespace FishNet.Transport.EOSNative.Migration
             }
 
             // Fallback: check for deactivated objects from migration that weren't matched by PUID lookup.
-            // This catches cases where PUID format mismatch caused the dictionary lookup to miss.
-            if (_playerPrefab != null)
+            // Only runs when migration actually happened (pending repossessions exist) to avoid
+            // stealing pooled/inactive objects during normal play.
+            bool migrationPending = HostMigratable.PendingRepossessions.Count > 0
+                || (HostMigrationManager.Instance?.HasPendingRepossessions == true);
+
+            if (migrationPending && _playerPrefab != null)
             {
                 string prefabName = _playerPrefab.gameObject.name;
                 var allNetworkObjects = FindObjectsByType<NetworkObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
@@ -228,7 +232,7 @@ namespace FishNet.Transport.EOSNative.Migration
                 }
             }
 
-            // No migrated objects found at all - spawn fresh player
+            // No migrated objects - spawn fresh player
             _spawnedConnections.Add(conn.ClientId);
             SpawnNewPlayer(conn);
         }

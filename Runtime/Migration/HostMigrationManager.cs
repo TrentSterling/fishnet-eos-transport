@@ -552,6 +552,12 @@ namespace FishNet.Transport.EOSNative.Migration
         /// </summary>
         public int TotalTrackedCount => _trackedObjects.Count + _migratableObjects.Count;
 
+        /// <summary>
+        /// Whether there are any auto-tracked objects waiting for repossession.
+        /// Used by HostMigrationPlayerSpawner to gate fallback logic.
+        /// </summary>
+        public bool HasPendingRepossessions => _pendingAutoRepossessions.Count > 0;
+
         #endregion
 
         #region Migration Flow
