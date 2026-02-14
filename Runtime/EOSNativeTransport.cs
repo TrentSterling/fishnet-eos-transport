@@ -1573,7 +1573,6 @@ namespace FishNet.Transport.EOSNative
             else
             {
                 UnsubscribeFromLobbyEvents();
-                UnsubscribeFromLobbyJoinEvent();
                 _server?.Stop();
                 _server = null;
                 NetworkManager.Log("[EOSNativeTransport] Server stopped.");
