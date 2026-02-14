@@ -272,15 +272,7 @@ namespace FishNet.Transport.EOSNative.Migration
 
         #region Helpers
 
-        /// <summary>
-        /// Normalizes a PUID string to prevent format mismatches between
-        /// conn.GetAddress() and ProductUserId.ToString().
-        /// </summary>
-        private static string NormalizePuid(string puid)
-        {
-            if (string.IsNullOrEmpty(puid)) return puid;
-            return puid.Trim().ToLowerInvariant();
-        }
+        private static string NormalizePuid(string puid) => PuidUtils.NormalizePuid(puid);
 
         #endregion
 

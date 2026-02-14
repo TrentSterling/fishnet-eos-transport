@@ -351,15 +351,7 @@ namespace FishNet.Transport.EOSNative.Migration
             return NormalizePuid(ownerPuid);
         }
 
-        /// <summary>
-        /// Normalizes a PUID string to prevent format mismatches between
-        /// conn.GetAddress() and ProductUserId.ToString().
-        /// </summary>
-        private static string NormalizePuid(string puid)
-        {
-            if (string.IsNullOrEmpty(puid)) return puid;
-            return puid.Trim().ToLowerInvariant();
-        }
+        private static string NormalizePuid(string puid) => PuidUtils.NormalizePuid(puid);
 
         /// <summary>
         /// Captures all SyncVar data from a NetworkObject and its children via reflection.
