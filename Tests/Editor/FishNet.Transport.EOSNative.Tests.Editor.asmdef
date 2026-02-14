@@ -15,7 +15,10 @@
     "overrideReferences": true,
     "precompiledReferences": ["nunit.framework.dll"],
     "autoReferenced": false,
-    "defineConstraints": ["UNITY_INCLUDE_TESTS"],
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS",
+        "FISHNET_V4"
+    ],
     "versionDefines": [],
     "noEngineReferences": false
 }
