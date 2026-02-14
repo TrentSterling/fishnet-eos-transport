@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using EOSNative;
+using EOSNative.Voice;
 using FishNet.Object;
 using FishNet.Object.Synchronizing;
 using EOSNative.Lobbies;
@@ -101,9 +102,11 @@ namespace FishNet.Transport.EOSNative
 
         #region Lifecycle
 
+        private EOSVoicePlayer _voicePlayer;
+
         private void Awake()
         {
-            // Subscribe to SyncVar change events
+            _voicePlayer = GetComponent<EOSVoicePlayer>();
             _ownerPuid.OnChange += OnPuidChanged;
             _displayName.OnChange += OnDisplayNameChanged;
         }
@@ -185,7 +188,8 @@ namespace FishNet.Transport.EOSNative
 
         private void OnPuidChanged(string oldValue, string newValue, bool asServer)
         {
-            // PUID changed - can update UI or other systems here
+            if (_voicePlayer != null && !string.IsNullOrEmpty(newValue))
+                _voicePlayer.ParticipantPuid = newValue;
         }
 
         private void OnDisplayNameChanged(string oldValue, string newValue, bool asServer)
