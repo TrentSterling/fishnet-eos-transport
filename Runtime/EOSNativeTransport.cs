@@ -407,6 +407,7 @@ namespace FishNet.Transport.EOSNative
         {
             // Subscribe BEFORE auto-init so we catch lobbies created immediately after
             SubscribeToLobbyJoinEvent();
+            RegisterLeaveLobbyHook();
 
             if (_autoInitialize && _eosConfig != null)
             {
@@ -481,12 +482,14 @@ namespace FishNet.Transport.EOSNative
             // Skip if we already handled this in OnPlayModeStateChanged
             if (_isExitingPlayMode) return;
 #endif
+            UnregisterLeaveLobbyHook();
             UnsubscribeFromLobbyJoinEvent();
             Shutdown();
         }
 
         private void OnApplicationQuit()
         {
+            UnregisterLeaveLobbyHook();
             UnsubscribeFromLobbyJoinEvent();
             // Leave lobby synchronously - async won't complete before Unity tears down
             if (IsInLobby && _lobbyManager != null)
@@ -514,6 +517,9 @@ namespace FishNet.Transport.EOSNative
             if (state == UnityEditor.PlayModeStateChange.ExitingPlayMode)
             {
                 _isExitingPlayMode = true;
+
+                // Unregister hook so LeaveLobbySync doesn't try to await FishNet shutdown
+                UnregisterLeaveLobbyHook();
 
                 // CRITICAL: Stop FishNet connections FIRST to prevent null refs during shutdown
                 // FishNet's TimeManager continues ticking and tries to send data - we must stop it
@@ -840,28 +846,9 @@ namespace FishNet.Transport.EOSNative
 
         /// <summary>
         /// Leaves the current lobby and stops all connections.
-        /// Waits for transport to fully stop before leaving the lobby.
+        /// FishNet shutdown is handled by the BeforeLeaveLobby hook registered in Start().
         /// </summary>
-        public async Task LeaveLobbyAsync()
-        {
-            StopHost();
-
-            // Wait for transport to actually reach Stopped state
-            // StopHost goes through FishNet's managers which may defer to next frame
-            int maxWaitMs = 2000;
-            int waited = 0;
-            while (waited < maxWaitMs &&
-                   (_clientState != LocalConnectionState.Stopped || _serverState != LocalConnectionState.Stopped))
-            {
-                await Task.Delay(50);
-                waited += 50;
-            }
-
-            // Clear migration state to prevent stale data in future sessions
-            HostMigrationManager.Instance?.ClearMigrationState();
-
-            await LobbyManager.LeaveLobbyAsync();
-        }
+        public async Task LeaveLobbyAsync() => await LobbyManager.LeaveLobbyAsync();
 
         /// <summary>
         /// Quick match - finds any available lobby and joins + connects.
@@ -1285,6 +1272,40 @@ namespace FishNet.Transport.EOSNative
 
         #endregion
 
+        #region Leave Lobby Hook
+
+        private void RegisterLeaveLobbyHook()
+        {
+            var lobbyMgr = LobbyManager;
+            if (lobbyMgr != null)
+                lobbyMgr.BeforeLeaveLobby = OnBeforeLeaveLobby;
+        }
+
+        private void UnregisterLeaveLobbyHook()
+        {
+            if (_lobbyManager != null)
+                _lobbyManager.BeforeLeaveLobby = null;
+        }
+
+        private async Task OnBeforeLeaveLobby()
+        {
+            StopHost();
+
+            // Wait for transport to actually reach Stopped state
+            // StopHost goes through FishNet's managers which may defer to next frame
+            int maxWaitMs = 2000, waited = 0;
+            while (waited < maxWaitMs &&
+                   (_clientState != LocalConnectionState.Stopped || _serverState != LocalConnectionState.Stopped))
+            {
+                await Task.Delay(50);
+                waited += 50;
+            }
+
+            HostMigrationManager.Instance?.ClearMigrationState();
+        }
+
+        #endregion
+
         #region Lobby Event Subscription (Fast Disconnect Detection)
 
         /// <summary>
@@ -1292,37 +1313,50 @@ namespace FishNet.Transport.EOSNative
         /// When a member leaves the lobby, we immediately disconnect their P2P connection
         /// instead of waiting for the ~25 second P2P timeout.
         /// </summary>
+        private bool _subscribedToLobbyEvents;
+
         private void SubscribeToLobbyEvents()
         {
-            if (_lobbyManager != null)
-            {
-                _lobbyManager.OnMemberLeft += OnLobbyMemberLeft;
-            }
+            if (_subscribedToLobbyEvents || _lobbyManager == null) return;
+            _lobbyManager.OnMemberLeft += OnLobbyMemberLeft;
+            _subscribedToLobbyEvents = true;
         }
 
         private void UnsubscribeFromLobbyEvents()
         {
-            if (_lobbyManager != null)
-            {
-                _lobbyManager.OnMemberLeft -= OnLobbyMemberLeft;
-            }
+            if (!_subscribedToLobbyEvents || _lobbyManager == null) return;
+            _lobbyManager.OnMemberLeft -= OnLobbyMemberLeft;
+            _subscribedToLobbyEvents = false;
         }
 
         /// <summary>
         /// Called when a lobby member leaves/disconnects.
         /// Triggers immediate FishNet disconnection instead of waiting for P2P timeout.
+        /// Handles both server-side (client left) and client-side (host left) scenarios.
         /// </summary>
         private void OnLobbyMemberLeft(string memberPuid)
         {
-            // Only server cares about members leaving
-            if (_server == null || _serverState != LocalConnectionState.Started)
-                return;
-
-            int connectionId = _server.GetConnectionIdByPuid(memberPuid);
-            if (connectionId > 0)
+            // Server-side: a client left our server — disconnect them immediately
+            if (_server != null && _serverState == LocalConnectionState.Started)
             {
-                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Lobby member {memberPuid} left - disconnecting connection {connectionId}");
-                StopConnection(connectionId, immediately: true);
+                int connectionId = _server.GetConnectionIdByPuid(memberPuid);
+                if (connectionId > 0)
+                {
+                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Lobby member {memberPuid} left - disconnecting connection {connectionId}");
+                    StopConnection(connectionId, immediately: true);
+                }
+                return;
+            }
+
+            // Client-side: the host left — stop our client immediately so migration can proceed cleanly
+            if (_clientState == LocalConnectionState.Started &&
+                !string.IsNullOrEmpty(memberPuid) &&
+                memberPuid == _remoteProductUserId)
+            {
+                EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $" Host {memberPuid} left lobby - stopping client for migration");
+                var nm = GetComponent<NetworkManager>() ?? FindAnyObjectByType<NetworkManager>();
+                if (nm != null && nm.IsClientStarted)
+                    nm.ClientManager.StopConnection();
             }
         }
 
@@ -1473,7 +1507,11 @@ namespace FishNet.Transport.EOSNative
             _client = new EOSClient(this);
             bool success = _client.Start(_socketName, _remoteProductUserId);
 
-            if (!success)
+            if (success)
+            {
+                SubscribeToLobbyEvents();
+            }
+            else
             {
                 SetClientState(LocalConnectionState.Stopped);
                 _client = null;
@@ -1568,6 +1606,7 @@ namespace FishNet.Transport.EOSNative
             }
             else if (_client != null)
             {
+                UnsubscribeFromLobbyEvents();
                 _client.Stop();
                 _client = null;
             }
