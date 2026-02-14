@@ -26,9 +26,16 @@ namespace FishNet.Transport.EOSNative.Diagnostics
     {
         #region Auto-Create
 
+        /// <summary>
+        /// Set to false before scene load to prevent automatic creation of the health check UI.
+        /// </summary>
+        public static bool AutoCreateEnabled = true;
+
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoCreate()
         {
+            if (!AutoCreateEnabled) return;
+
             if (FindAnyObjectByType<EOSHealthCheck>() != null)
                 return;
 
@@ -76,6 +83,9 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         #region Settings
 
         [Header("Display")]
+        [Tooltip("Enable or disable the OnGUI overlay rendering.")]
+        [SerializeField] private bool _enableOnGUI = true;
+
         [Tooltip("Keyboard shortcut to toggle the panel.")]
         [SerializeField] private Key _toggleKey = Key.F11;
 
@@ -1341,7 +1351,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         private void OnGUI()
         {
-            if (!_visible) return;
+            if (!_enableOnGUI || !_visible) return;
 
             BuildStyles();
 

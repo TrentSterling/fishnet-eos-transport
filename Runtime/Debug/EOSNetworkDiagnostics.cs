@@ -32,6 +32,9 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         #region Settings
 
         [Header("Display")]
+        [Tooltip("Enable or disable the OnGUI overlay rendering.")]
+        [SerializeField] private bool _enableOnGUI = true;
+
         [Tooltip("Keyboard shortcut to toggle the panel.")]
         [SerializeField] private Key _toggleKey = Key.F12;
 
@@ -474,7 +477,7 @@ namespace FishNet.Transport.EOSNative.Diagnostics
 
         private void OnGUI()
         {
-            if (!_visible) return;
+            if (!_enableOnGUI || !_visible) return;
 
             BuildStyles();
 

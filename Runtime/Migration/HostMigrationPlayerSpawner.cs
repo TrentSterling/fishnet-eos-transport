@@ -120,14 +120,14 @@ namespace FishNet.Transport.EOSNative.Migration
                 return;
             }
 
-            // Get the owner's PUID from the connection address
-            string ownerPuid = conn.GetAddress();
+            // Get the owner's PUID from the connection address (normalized for consistent lookups)
+            string ownerPuid = NormalizePuid(conn.GetAddress());
 
             // Client host (connection 32767) doesn't have a network address
             // Use the local PUID instead since client host is the server
             if (string.IsNullOrEmpty(ownerPuid) && conn.IsLocalClient)
             {
-                ownerPuid = EOSManager.Instance?.LocalProductUserId?.ToString();
+                ownerPuid = NormalizePuid(EOSManager.Instance?.LocalProductUserId?.ToString());
                 Log($"Client host detected, using local PUID: {ownerPuid?.Substring(0, 8)}...");
             }
 
@@ -202,7 +202,33 @@ namespace FishNet.Transport.EOSNative.Migration
                 return;
             }
 
-            // No migrated objects - spawn fresh player
+            // Fallback: check for deactivated objects from migration that weren't matched by PUID lookup.
+            // This catches cases where PUID format mismatch caused the dictionary lookup to miss.
+            if (_playerPrefab != null)
+            {
+                string prefabName = _playerPrefab.gameObject.name;
+                var allNetworkObjects = FindObjectsByType<NetworkObject>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+                foreach (var nob in allNetworkObjects)
+                {
+                    if (nob == null || nob.gameObject.activeSelf) continue;
+                    if (!nob.gameObject.name.Replace("(Clone)", "").Trim().Equals(prefabName)) continue;
+
+                    // Found a deactivated player object from migration — reclaim it
+                    Debug.LogWarning($"[HostMigrationPlayerSpawner] PUID lookup missed deactivated object '{nob.name}' for conn {conn.ClientId} (PUID: {ownerPuid}). Reclaiming instead of spawning duplicate.");
+                    nob.gameObject.SetActive(true);
+                    nob.GiveOwnership(conn);
+
+                    if (_addToDefaultScene)
+                    {
+                        InstanceFinder.SceneManager.AddOwnerToDefaultScene(nob);
+                    }
+
+                    _spawnedConnections.Add(conn.ClientId);
+                    return;
+                }
+            }
+
+            // No migrated objects found at all - spawn fresh player
             _spawnedConnections.Add(conn.ClientId);
             SpawnNewPlayer(conn);
         }
@@ -236,6 +262,20 @@ namespace FishNet.Transport.EOSNative.Migration
 
             Log($"Spawned player for connection {conn.ClientId}");
             OnPlayerSpawned?.Invoke(nob);
+        }
+
+        #endregion
+
+        #region Helpers
+
+        /// <summary>
+        /// Normalizes a PUID string to prevent format mismatches between
+        /// conn.GetAddress() and ProductUserId.ToString().
+        /// </summary>
+        private static string NormalizePuid(string puid)
+        {
+            if (string.IsNullOrEmpty(puid)) return puid;
+            return puid.Trim().ToLowerInvariant();
         }
 
         #endregion

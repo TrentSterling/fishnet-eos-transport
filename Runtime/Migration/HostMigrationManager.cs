@@ -334,7 +334,7 @@ namespace FishNet.Transport.EOSNative.Migration
         }
 
         /// <summary>
-        /// Gets the owner's PUID from a NetworkObject.
+        /// Gets the owner's PUID from a NetworkObject, normalized for consistent lookups.
         /// </summary>
         private string GetOwnerPuid(NetworkObject nob)
         {
@@ -348,7 +348,17 @@ namespace FishNet.Transport.EOSNative.Migration
                 ownerPuid = EOSManager.Instance?.LocalProductUserId?.ToString();
             }
 
-            return ownerPuid;
+            return NormalizePuid(ownerPuid);
+        }
+
+        /// <summary>
+        /// Normalizes a PUID string to prevent format mismatches between
+        /// conn.GetAddress() and ProductUserId.ToString().
+        /// </summary>
+        private static string NormalizePuid(string puid)
+        {
+            if (string.IsNullOrEmpty(puid)) return puid;
+            return puid.Trim().ToLowerInvariant();
         }
 
         /// <summary>
@@ -923,16 +933,17 @@ namespace FishNet.Transport.EOSNative.Migration
                     migratable.LoadDataFromStateStruct(state);
                     migratable.LoadState = null;
 
-                    // Register for repossession
-                    if (!string.IsNullOrEmpty(state.OwnerPuid))
+                    // Register for repossession (normalize PUID for consistent lookups)
+                    string normalizedLegacyPuid = NormalizePuid(state.OwnerPuid);
+                    if (!string.IsNullOrEmpty(normalizedLegacyPuid))
                     {
-                        if (!HostMigratable.PendingRepossessions.ContainsKey(state.OwnerPuid))
+                        if (!HostMigratable.PendingRepossessions.ContainsKey(normalizedLegacyPuid))
                         {
-                            HostMigratable.PendingRepossessions[state.OwnerPuid] = new List<HostMigratable>();
+                            HostMigratable.PendingRepossessions[normalizedLegacyPuid] = new List<HostMigratable>();
                         }
-                        HostMigratable.PendingRepossessions[state.OwnerPuid].Add(migratable);
+                        HostMigratable.PendingRepossessions[normalizedLegacyPuid].Add(migratable);
                         migratable.gameObject.SetActive(false);
-                        Log($"Registered for repossession (legacy): {state.PrefabName} for owner {state.OwnerPuid.Substring(0, 8)}...");
+                        Log($"Registered for repossession (legacy): {state.PrefabName} for owner {normalizedLegacyPuid.Substring(0, 8)}...");
                     }
                     else
                     {
@@ -951,16 +962,17 @@ namespace FishNet.Transport.EOSNative.Migration
                         RestoreSyncVarData(nob, state);
                     }
 
-                    // Register for repossession (using new system)
-                    if (!string.IsNullOrEmpty(state.OwnerPuid))
+                    // Register for repossession (normalize PUID for consistent lookups)
+                    string normalizedAutoPuid = NormalizePuid(state.OwnerPuid);
+                    if (!string.IsNullOrEmpty(normalizedAutoPuid))
                     {
-                        if (!_pendingAutoRepossessions.ContainsKey(state.OwnerPuid))
+                        if (!_pendingAutoRepossessions.ContainsKey(normalizedAutoPuid))
                         {
-                            _pendingAutoRepossessions[state.OwnerPuid] = new List<NetworkObject>();
+                            _pendingAutoRepossessions[normalizedAutoPuid] = new List<NetworkObject>();
                         }
-                        _pendingAutoRepossessions[state.OwnerPuid].Add(nob);
+                        _pendingAutoRepossessions[normalizedAutoPuid].Add(nob);
                         go.gameObject.SetActive(false);
-                        Log($"Registered for repossession (auto): {state.PrefabName} for owner {state.OwnerPuid.Substring(0, 8)}...");
+                        Log($"Registered for repossession (auto): {state.PrefabName} for owner {normalizedAutoPuid.Substring(0, 8)}...");
                     }
                     else
                     {
