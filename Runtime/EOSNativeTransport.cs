@@ -613,9 +613,10 @@ namespace FishNet.Transport.EOSNative
             {
                 var voiceGO = new GameObject("EOSVoiceManager");
                 voiceGO.transform.SetParent(transform);
-                voiceGO.AddComponent<EOSVoiceManager>();
+                voiceManager = voiceGO.AddComponent<EOSVoiceManager>();
                 EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", "Created EOSVoiceManager");
             }
+            voiceManager.UseManualAudioOutput = true;
 
             var chatManager = FindAnyObjectByType<EOSLobbyChatManager>();
             if (chatManager == null)

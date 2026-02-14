@@ -562,7 +562,30 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("Voice Connected", "No lobby");
             }
 
-            // Step 17: Voice Mic Level (info only, always passes)
+            // Step 17: Voice Player Wired
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Voice Player Wired", () =>
+                {
+                    var local = EOSNetworkPlayer.LocalPlayer;
+                    if (local == null)
+                        return (StepStatus.Running, "No local player yet");
+                    var vp = local.GetComponent<EOSVoicePlayer>();
+                    if (vp == null)
+                        return (StepStatus.Fail, "No EOSVoicePlayer on local player");
+                    if (string.IsNullOrEmpty(vp.ParticipantPuid))
+                        return (StepStatus.Running, "PUID not set yet");
+                    if (vp.ParticipantPuid == local.Puid)
+                        return (StepStatus.Pass, $"PUID: {Truncate(vp.ParticipantPuid, 12)}, Spatial: {vp.SpatialBlend:F1}");
+                    return (StepStatus.Fail, $"PUID mismatch: player={Truncate(local.Puid, 8)} voice={Truncate(vp.ParticipantPuid, 8)}");
+                });
+            }
+            else
+            {
+                AddSkipped("Voice Player Wired", "No lobby");
+            }
+
+            // Step 18: Voice Mic Level (info only, always passes)
             if (lobbyCreated)
             {
                 await RunStep("Voice Mic Level", () =>
@@ -727,28 +750,42 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("Remote Player", "No lobby");
             }
 
-            // Step 16: SyncVars + Voice
+            // Step 16: SyncVars Verified
             if (lobbyCreated)
             {
-                await RunStep("SyncVars + Voice", () =>
+                await RunStepWithWait("SyncVars Verified", () =>
                 {
                     var local = EOSNetworkPlayer.LocalPlayer;
-                    string syncInfo = local != null && !string.IsNullOrEmpty(local.Puid)
-                        ? $"PUID: {Truncate(local.Puid, 8)}"
-                        : "No PUID";
-
-                    var voice = EOSVoiceManager.Instance;
-                    string voiceInfo = voice != null
-                        ? (voice.IsConnected ? $"Voice OK ({voice.ParticipantCount}p)" : "Voice pending")
-                        : "No voice mgr";
-
-                    bool puidOk = local != null && !string.IsNullOrEmpty(local.Puid);
-                    return (puidOk ? StepStatus.Pass : StepStatus.Warning, $"{syncInfo}, {voiceInfo}");
+                    if (local == null)
+                        return (StepStatus.Running, "No local player yet");
+                    if (!string.IsNullOrEmpty(local.Puid))
+                        return (StepStatus.Pass, $"PUID: {Truncate(local.Puid, 12)}, Name: {local.DisplayName}");
+                    return (StepStatus.Running, "Waiting for PUID sync...");
                 });
             }
             else
             {
-                AddSkipped("SyncVars + Voice", "No lobby");
+                AddSkipped("SyncVars Verified", "No lobby");
+            }
+
+            // Step 17: Voice Connected
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Voice Connected", () => CheckVoiceConnected());
+            }
+            else
+            {
+                AddSkipped("Voice Connected", "No lobby");
+            }
+
+            // Step 18: Voice Players Wired
+            if (lobbyCreated)
+            {
+                await RunStepWithWait("Voice Players Wired", () => CheckVoicePlayersWired());
+            }
+            else
+            {
+                AddSkipped("Voice Players Wired", "No lobby");
             }
 
             // Step 17: Stability Hold
@@ -931,7 +968,27 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 AddSkipped("SyncVar Received", "Not joined");
             }
 
-            // Step 14: Stability Hold
+            // Step 14: Voice Connected
+            if (joined)
+            {
+                await RunStepWithWait("Voice Connected", () => CheckVoiceConnected());
+            }
+            else
+            {
+                AddSkipped("Voice Connected", "Not joined");
+            }
+
+            // Step 15: Voice Players Wired
+            if (joined)
+            {
+                await RunStepWithWait("Voice Players Wired", () => CheckVoicePlayersWired());
+            }
+            else
+            {
+                AddSkipped("Voice Players Wired", "Not joined");
+            }
+
+            // Step 16: Stability Hold
             if (joined)
             {
                 await RunStepAsync("Stability Hold", async () =>
@@ -1112,6 +1169,71 @@ namespace FishNet.Transport.EOSNative.Diagnostics
             {
                 AddSkipped(_testMode == TestMode.Stress ? "Migration Started" : "Leave", "Not joined");
             }
+        }
+
+        #endregion
+
+        #region Voice Check Helpers
+
+        private (StepStatus, string) CheckVoiceConnected()
+        {
+            var voice = EOSVoiceManager.Instance;
+            if (voice == null)
+                return (StepStatus.Pass, "No EOSVoiceManager (optional)");
+            if (!voice.IsVoiceEnabled)
+                return (StepStatus.Pass, "Voice not enabled for this lobby");
+            if (voice.IsConnected && voice.ParticipantCount >= 1)
+                return (StepStatus.Pass, $"Connected, {voice.ParticipantCount} participant(s)");
+            if (voice.IsConnected)
+                return (StepStatus.Running, "Connected, waiting for participants...");
+            return (StepStatus.Running, "Connecting to RTC...");
+        }
+
+        private (StepStatus, string) CheckVoicePlayersWired()
+        {
+            var players = EOSNetworkPlayer.AllPlayers;
+            if (players.Count == 0)
+                return (StepStatus.Running, "No players yet");
+
+            int wired = 0;
+            int total = players.Count;
+            var issues = new List<string>();
+
+            foreach (var player in players)
+            {
+                var vp = player.GetComponent<EOSVoicePlayer>();
+                if (vp == null)
+                {
+                    issues.Add($"conn:{player.ConnectionId} missing EOSVoicePlayer");
+                    continue;
+                }
+
+                string playerPuid = player.Puid;
+                string voicePuid = vp.ParticipantPuid;
+
+                if (string.IsNullOrEmpty(playerPuid))
+                {
+                    issues.Add($"conn:{player.ConnectionId} no PUID yet");
+                    continue;
+                }
+
+                if (playerPuid == voicePuid)
+                {
+                    wired++;
+                }
+                else
+                {
+                    issues.Add($"conn:{player.ConnectionId} PUID mismatch");
+                }
+            }
+
+            if (wired == total)
+                return (StepStatus.Pass, $"{wired}/{total} players wired");
+
+            if (issues.Count > 0)
+                return (StepStatus.Running, string.Join(", ", issues));
+
+            return (StepStatus.Running, $"{wired}/{total} wired...");
         }
 
         #endregion

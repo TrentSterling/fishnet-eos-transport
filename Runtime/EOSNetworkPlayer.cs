@@ -107,6 +107,10 @@ namespace FishNet.Transport.EOSNative
         private void Awake()
         {
             _voicePlayer = GetComponent<EOSVoicePlayer>();
+            if (_voicePlayer == null && EOSVoiceManager.Instance != null && EOSVoiceManager.Instance.UseManualAudioOutput)
+            {
+                _voicePlayer = gameObject.AddComponent<EOSVoicePlayer>();
+            }
             _ownerPuid.OnChange += OnPuidChanged;
             _displayName.OnChange += OnDisplayNameChanged;
         }
