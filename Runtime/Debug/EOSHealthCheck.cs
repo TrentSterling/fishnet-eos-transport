@@ -29,9 +29,16 @@ namespace FishNet.Transport.EOSNative.Diagnostics
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void AutoCreate()
         {
-            // Gated by EOSManager.EnableHealthCheckUI (toggle on the EOSManager component)
+            // Gated by EOSManager.EnableHealthCheckUI if the property exists (eos-sdk >= 1.4.2).
+            // Uses reflection to avoid a hard compile-time dependency on a specific eos-sdk version.
             var eosManager = FindAnyObjectByType<EOSManager>();
-            if (eosManager == null || !eosManager.EnableHealthCheckUI) return;
+            if (eosManager != null)
+            {
+                var prop = eosManager.GetType().GetProperty("EnableHealthCheckUI",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                if (prop != null && !(bool)prop.GetValue(eosManager))
+                    return;
+            }
 
             if (FindAnyObjectByType<EOSHealthCheck>() != null)
                 return;
@@ -43,7 +50,11 @@ namespace FishNet.Transport.EOSNative.Diagnostics
                 return;
             }
 
-            eosManager.gameObject.AddComponent<EOSHealthCheck>();
+            if (eosManager != null)
+            {
+                eosManager.gameObject.AddComponent<EOSHealthCheck>();
+                return;
+            }
         }
 
         #endregion
