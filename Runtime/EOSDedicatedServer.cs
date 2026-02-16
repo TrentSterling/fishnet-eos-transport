@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Linq;
+using System.Threading.Tasks;
 using EOSNative;
 using EOSNative.Lobbies;
 using UnityEngine;
@@ -247,7 +248,11 @@ namespace FishNet.Transport.EOSNative
             _ = StartServerAsync(); // Fire and forget - don't await in coroutine
         }
 
+#if UNITY_6000_0_OR_NEWER
         private async Awaitable StartServerAsync()
+#else
+        private async Task StartServerAsync()
+#endif
         {
             var options = new LobbyCreateOptions
             {
@@ -275,7 +280,11 @@ namespace FishNet.Transport.EOSNative
         /// <summary>
         /// Manually start the dedicated server.
         /// </summary>
+#if UNITY_6000_0_OR_NEWER
         public async Awaitable StartServer(string lobbyName = null, string gameMode = null, int? maxPlayers = null)
+#else
+        public async Task StartServer(string lobbyName = null, string gameMode = null, int? maxPlayers = null)
+#endif
         {
             _lobbyName = lobbyName ?? _lobbyName;
             _gameMode = gameMode ?? _gameMode;
@@ -287,7 +296,11 @@ namespace FishNet.Transport.EOSNative
         /// <summary>
         /// Stop the dedicated server.
         /// </summary>
+#if UNITY_6000_0_OR_NEWER
         public async Awaitable StopServer()
+#else
+        public async Task StopServer()
+#endif
         {
             if (_transport != null)
             {

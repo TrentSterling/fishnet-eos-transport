@@ -45,6 +45,17 @@ namespace FishNet.Transport.EOSNative.Demo
         private bool _wantsJump;
         private float _lastJumpTime;
 
+        private Vector3 RbVelocity
+        {
+#if UNITY_6000_0_OR_NEWER
+            get => _rb.linearVelocity;
+            set => _rb.linearVelocity = value;
+#else
+            get => _rb.velocity;
+            set => _rb.velocity = value;
+#endif
+        }
+
         private void Awake()
         {
             _rb = GetComponent<Rigidbody>();
@@ -130,9 +141,9 @@ namespace FishNet.Transport.EOSNative.Demo
             // Jump
             if (_wantsJump && isGrounded)
             {
-                Vector3 vel = _rb.linearVelocity;
+                Vector3 vel = RbVelocity;
                 vel.y = _jumpForce;
-                _rb.linearVelocity = vel;
+                RbVelocity = vel;
                 _lastJumpTime = Time.time;
                 _wantsJump = false;
             }
@@ -142,7 +153,7 @@ namespace FishNet.Transport.EOSNative.Demo
             }
 
             // Movement
-            Vector3 currentVel = _rb.linearVelocity;
+            Vector3 currentVel = RbVelocity;
             Vector3 horizontalVel = new Vector3(currentVel.x, 0f, currentVel.z);
             Vector3 inputDir = new Vector3(_input.x, 0f, _input.y);
             bool hasInput = inputDir.sqrMagnitude > 0.01f;
@@ -168,16 +179,16 @@ namespace FishNet.Transport.EOSNative.Demo
                 }
                 else if (horizontalVel.magnitude > 0f)
                 {
-                    _rb.linearVelocity = new Vector3(0f, currentVel.y, 0f);
+                    RbVelocity = new Vector3(0f, currentVel.y, 0f);
                 }
             }
 
             // Clamp max speed
-            horizontalVel = new Vector3(_rb.linearVelocity.x, 0f, _rb.linearVelocity.z);
+            horizontalVel = new Vector3(RbVelocity.x, 0f, RbVelocity.z);
             if (horizontalVel.magnitude > _maxSpeed)
             {
                 Vector3 clamped = horizontalVel.normalized * _maxSpeed;
-                _rb.linearVelocity = new Vector3(clamped.x, _rb.linearVelocity.y, clamped.z);
+                RbVelocity = new Vector3(clamped.x, RbVelocity.y, clamped.z);
             }
         }
 

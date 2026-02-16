@@ -311,7 +311,11 @@ namespace FishNet.Transport.EOSNative.Demo
             float positionDamper = 2f * mass * positionDampingRatio * omega;
 
             Vector3 positionError = receivedPosition - rigidbodyToTrack.position;
+#if UNITY_6000_0_OR_NEWER
             Vector3 velocityError = -rigidbodyToTrack.linearVelocity;
+#else
+            Vector3 velocityError = -rigidbodyToTrack.velocity;
+#endif
             Vector3 springForce = positionError * positionSpring + velocityError * positionDamper;
 
             if (!IsValidVector(springForce)) return;
