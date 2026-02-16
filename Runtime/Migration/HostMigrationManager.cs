@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using FishNet;
@@ -40,8 +41,16 @@ namespace FishNet.Transport.EOSNative.Migration
 
         /// <summary>
         /// Fired when migration completes (server restarted, objects restored).
+        /// Preserved for backward compatibility — fires for both success and failure.
+        /// Prefer <see cref="OnMigrationFinished"/> for detailed results.
         /// </summary>
         public event Action OnMigrationCompleted;
+
+        /// <summary>
+        /// Fired when migration finishes with detailed result information.
+        /// Fires for both success and failure — check <see cref="MigrationFinishedArgs.Success"/>.
+        /// </summary>
+        public event Action<MigrationFinishedArgs> OnMigrationFinished;
 
         #endregion
 
@@ -51,6 +60,25 @@ namespace FishNet.Transport.EOSNative.Migration
         [Tooltip("PrefabObjects collection containing all migratable prefabs.")]
         [SerializeField]
         private PrefabObjects _prefabCollection;
+
+        [Header("Migration Settings")]
+        [Tooltip("Maximum time in seconds before migration is forcibly ended by the watchdog.")]
+        [SerializeField]
+        [Range(15f, 120f)]
+        private float _watchdogTimeout = 45f;
+
+        [Tooltip("Maximum number of client reconnect attempts during migration.")]
+        [SerializeField]
+        [Range(3, 20)]
+        private int _maxReconnectAttempts = 10;
+
+        [Tooltip("Leave the EOS lobby when migration fails (prevents limbo state).")]
+        [SerializeField]
+        private bool _leaveLobbyOnFailure = true;
+
+        [Tooltip("Stop FishNet when migration fails (prevents running with dead connection).")]
+        [SerializeField]
+        private bool _stopFishNetOnFailure = true;
 
         [Header("Debug")]
         [SerializeField]
@@ -98,8 +126,14 @@ namespace FishNet.Transport.EOSNative.Migration
 
         // Reconnect retry state (for clients during migration)
         private int _reconnectAttempt = 0;
-        private const int MAX_RECONNECT_ATTEMPTS = 5;
-        private static readonly float[] RECONNECT_DELAYS = { 1.5f, 2f, 3f, 4f, 5f };
+        private static readonly float[] RECONNECT_DELAYS = { 1.5f, 2f, 2.5f, 3f, 3.5f, 4f, 4.5f, 5f, 5f, 5f };
+
+        // Watchdog
+        private Coroutine _watchdogCoroutine;
+
+        // Timing
+        private float _migrationStartTime;
+        private bool _wasNewHost;
 
         #endregion
 
@@ -161,10 +195,6 @@ namespace FishNet.Transport.EOSNative.Migration
             // Instead, we scan ServerManager.Objects.Spawned when migration starts.
         }
 
-        /// <summary>
-        /// Called when any NetworkObject is spawned on the server.
-        /// Auto-tracks it for migration unless it has DoNotMigrate.
-        /// </summary>
         /// <summary>
         /// Scans all currently spawned NetworkObjects and populates _trackedObjects.
         /// Called on-demand before saving states since FishNet doesn't expose global spawn/despawn events.
@@ -229,6 +259,8 @@ namespace FishNet.Transport.EOSNative.Migration
 
         private void OnDestroy()
         {
+            CancelWatchdog();
+
             if (_lobbyManager != null)
             {
                 _lobbyManager.OnOwnerChanged -= OnLobbyOwnerChanged;
@@ -509,6 +541,8 @@ namespace FishNet.Transport.EOSNative.Migration
         /// </summary>
         public void ClearMigrationState()
         {
+            CancelWatchdog();
+            CancelInvoke(nameof(AttemptReconnect));
             _savedStates.Clear();
             _trackedObjects.Clear();
             _migratableObjects.Clear();
@@ -516,6 +550,16 @@ namespace FishNet.Transport.EOSNative.Migration
             HostMigratable.ClearPendingRepossessions();
             IsMigrating = false;
             Log("Migration state cleared");
+        }
+
+        /// <summary>
+        /// Cancel an in-progress migration. Triggers cleanup if configured.
+        /// </summary>
+        public void CancelMigration()
+        {
+            if (!IsMigrating) return;
+            Log("Migration cancelled by caller");
+            CompleteMigration(MigrationResult.Cancelled);
         }
 
         /// <summary>
@@ -644,6 +688,10 @@ namespace FishNet.Transport.EOSNative.Migration
             }
 
             IsMigrating = true;
+            _wasNewHost = true;
+            _migrationStartTime = Time.unscaledTime;
+            _reconnectAttempt = 0;
+            StartWatchdog();
             Log("Beginning migration sequence as NEW HOST...");
 
             // Step 1: Stop client first
@@ -755,23 +803,29 @@ namespace FishNet.Transport.EOSNative.Migration
 
         private void OnHostServerStarted(ServerConnectionStateArgs args)
         {
-            if (args.ConnectionState != LocalConnectionState.Started) return;
+            // Handle both Started and Stopped (failure) states
+            if (args.ConnectionState == LocalConnectionState.Started)
+            {
+                InstanceFinder.ServerManager.OnServerConnectionState -= OnHostServerStarted;
+                Log("Host: Server started");
 
-            InstanceFinder.ServerManager.OnServerConnectionState -= OnHostServerStarted;
-            Log("Host: Server started");
+                // Step 4: Restore migratable objects
+                MigrationFinish();
 
-            // Step 4: Restore migratable objects
-            MigrationFinish();
+                // Step 5: Start client (clienthost)
+                InstanceFinder.ClientManager.StartConnection();
 
-            // Step 5: Start client (clienthost)
-            InstanceFinder.ClientManager.StartConnection();
+                // Rebuild observers
+                InstanceFinder.ServerManager.Objects.RebuildObservers();
 
-            // Rebuild observers
-            InstanceFinder.ServerManager.Objects.RebuildObservers();
-
-            IsMigrating = false;
-            Log("Host: Migration complete!");
-            OnMigrationCompleted?.Invoke();
+                CompleteMigration(MigrationResult.Success);
+            }
+            else if (args.ConnectionState == LocalConnectionState.Stopped)
+            {
+                InstanceFinder.ServerManager.OnServerConnectionState -= OnHostServerStarted;
+                Log("Host: Server FAILED to start");
+                CompleteMigration(MigrationResult.ServerStartFailed);
+            }
         }
 
         /// <summary>
@@ -786,6 +840,10 @@ namespace FishNet.Transport.EOSNative.Migration
             }
 
             IsMigrating = true;
+            _wasNewHost = false;
+            _migrationStartTime = Time.unscaledTime;
+            _reconnectAttempt = 0;
+            StartWatchdog();
             Log("Beginning migration sequence as CLIENT...");
             OnMigrationStarted?.Invoke();
 
@@ -828,17 +886,27 @@ namespace FishNet.Transport.EOSNative.Migration
 
         private void AttemptReconnect()
         {
+            // Safety: if migration was already completed/cancelled, don't proceed
+            if (!IsMigrating) return;
+
             _reconnectAttempt++;
 
-            if (_reconnectAttempt > MAX_RECONNECT_ATTEMPTS)
+            // Check lobby membership before wasting a reconnect attempt
+            if (_lobbyManager != null && !_lobbyManager.IsInLobby)
             {
-                Log($"Client: Failed to reconnect after {MAX_RECONNECT_ATTEMPTS} attempts");
-                IsMigrating = false;
-                OnMigrationCompleted?.Invoke(); // Notify completion (failed)
+                Log("Client: No longer in lobby — cannot reconnect");
+                CompleteMigration(MigrationResult.LobbyMembershipLost);
                 return;
             }
 
-            Log($"Client: Reconnect attempt {_reconnectAttempt}/{MAX_RECONNECT_ATTEMPTS}...");
+            if (_reconnectAttempt > _maxReconnectAttempts)
+            {
+                Log($"Client: Failed to reconnect after {_maxReconnectAttempts} attempts");
+                CompleteMigration(MigrationResult.ReconnectFailed);
+                return;
+            }
+
+            Log($"Client: Reconnect attempt {_reconnectAttempt}/{_maxReconnectAttempts}...");
 
             // Try to start client connection
             InstanceFinder.ClientManager.OnClientConnectionState += OnReconnectResult;
@@ -856,19 +924,20 @@ namespace FishNet.Transport.EOSNative.Migration
 
             InstanceFinder.ClientManager.OnClientConnectionState -= OnReconnectResult;
 
+            // Safety: if migration was already completed/cancelled, don't proceed
+            if (!IsMigrating) return;
+
             if (args.ConnectionState == LocalConnectionState.Started)
             {
                 // Success!
-                IsMigrating = false;
                 Log("Client: Successfully reconnected to new host");
-                OnMigrationCompleted?.Invoke();
+                CompleteMigration(MigrationResult.Success);
             }
             else
             {
                 // Failed - try again with delay
-                float delay = _reconnectAttempt < RECONNECT_DELAYS.Length
-                    ? RECONNECT_DELAYS[_reconnectAttempt]
-                    : RECONNECT_DELAYS[RECONNECT_DELAYS.Length - 1];
+                int delayIndex = Math.Min(_reconnectAttempt, RECONNECT_DELAYS.Length - 1);
+                float delay = RECONNECT_DELAYS[delayIndex];
 
                 Log($"Client: Connection failed, retrying in {delay}s...");
                 Invoke(nameof(AttemptReconnect), delay);
@@ -1034,6 +1103,107 @@ namespace FishNet.Transport.EOSNative.Migration
 
         #endregion
 
+        #region Centralized Migration Completion
+
+        /// <summary>
+        /// Single method that handles ALL migration endings — success, failure, timeout, cancellation.
+        /// Cancels watchdog, fires events, triggers cleanup on failure.
+        /// </summary>
+        private void CompleteMigration(MigrationResult result)
+        {
+            if (!IsMigrating) return; // Already completed (guard against double-fire)
+
+            CancelWatchdog();
+            CancelInvoke(nameof(AttemptReconnect));
+
+            float elapsed = Time.unscaledTime - _migrationStartTime;
+            bool success = result == MigrationResult.Success;
+
+            IsMigrating = false;
+
+            var args = new MigrationFinishedArgs
+            {
+                Success = success,
+                Result = result,
+                WasNewHost = _wasNewHost,
+                ElapsedSeconds = elapsed,
+                ReconnectAttempts = _reconnectAttempt
+            };
+
+            if (success)
+            {
+                Log($"Migration completed SUCCESSFULLY in {elapsed:F1}s (host={_wasNewHost}, attempts={_reconnectAttempt})");
+            }
+            else
+            {
+                Log($"Migration FAILED: {result} after {elapsed:F1}s (host={_wasNewHost}, attempts={_reconnectAttempt})");
+                HandleMigrationFailure();
+            }
+
+            // Fire detailed event first, then legacy event for backward compat
+            OnMigrationFinished?.Invoke(args);
+            OnMigrationCompleted?.Invoke();
+        }
+
+        /// <summary>
+        /// Cleans up after a failed migration to prevent the limbo state
+        /// where the user is stuck in an EOS lobby with a dead FishNet connection.
+        /// </summary>
+        private void HandleMigrationFailure()
+        {
+            if (_stopFishNetOnFailure)
+            {
+                Log("Stopping FishNet due to migration failure");
+                if (InstanceFinder.IsServerStarted)
+                    InstanceFinder.ServerManager.StopConnection(true);
+                if (InstanceFinder.IsClientStarted)
+                    InstanceFinder.ClientManager.StopConnection();
+            }
+
+            if (_leaveLobbyOnFailure && _lobbyManager != null && _lobbyManager.IsInLobby)
+            {
+                Log("Leaving lobby due to migration failure");
+                _ = _transport?.LeaveLobbyAsync();
+            }
+
+            // Clear saved states so they don't pollute next session
+            _savedStates.Clear();
+        }
+
+        #endregion
+
+        #region Watchdog
+
+        private void StartWatchdog()
+        {
+            CancelWatchdog();
+            _watchdogCoroutine = StartCoroutine(WatchdogCoroutine());
+        }
+
+        private void CancelWatchdog()
+        {
+            if (_watchdogCoroutine != null)
+            {
+                StopCoroutine(_watchdogCoroutine);
+                _watchdogCoroutine = null;
+            }
+        }
+
+        private IEnumerator WatchdogCoroutine()
+        {
+            yield return new WaitForSecondsRealtime(_watchdogTimeout);
+
+            if (IsMigrating)
+            {
+                Log($"WATCHDOG: Migration exceeded {_watchdogTimeout}s timeout — forcing completion");
+                CompleteMigration(MigrationResult.WatchdogTimeout);
+            }
+
+            _watchdogCoroutine = null;
+        }
+
+        #endregion
+
         #region Logging
 
         private void Log(string message)
@@ -1101,6 +1271,10 @@ namespace FishNet.Transport.EOSNative.Migration
                 if (GUILayout.Button("Finish Migration"))
                 {
                     manager.DebugTriggerFinish();
+                }
+                if (GUILayout.Button("Cancel Migration"))
+                {
+                    manager.CancelMigration();
                 }
                 EditorGUILayout.EndHorizontal();
 

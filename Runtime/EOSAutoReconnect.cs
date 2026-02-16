@@ -3,6 +3,7 @@ using System.Collections;
 using System.Collections.Generic;
 using EOSNative;
 using EOSNative.Lobbies;
+using FishNet.Transport.EOSNative.Migration;
 using UnityEngine;
 using FishNet.Managing;
 using FishNet.Transporting;
@@ -242,6 +243,15 @@ namespace FishNet.Transport.EOSNative
                 // Disconnected
                 if (_enabled && _wasConnected && !_isReconnecting)
                 {
+                    // Skip auto-reconnect if HostMigrationManager is handling the reconnect
+                    var migrationManager = HostMigrationManager.Instance;
+                    if (migrationManager != null && migrationManager.IsMigrating)
+                    {
+                        Debug.Log("[EOSAutoReconnect] Skipping auto-reconnect — host migration in progress");
+                        _wasConnected = false;
+                        return;
+                    }
+
                     // Save session state before attempting reconnect
                     if (_preserveSession && _localSession != null)
                     {
