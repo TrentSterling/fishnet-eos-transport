@@ -26,6 +26,11 @@ namespace FishNet.Transport.EOSNative
 
         private readonly PacketFragmenter _fragmenter = new();
 
+        // Connection timeout
+        private float _connectStartTime;
+        private float _connectTimeout;
+        private bool _connected;
+
         // Bandwidth tracking
         private long _totalBytesSent;
         private long _totalBytesReceived;
@@ -60,7 +65,7 @@ namespace FishNet.Transport.EOSNative
 
         #region Start / Stop
 
-        public bool Start(string socketName, string remoteProductUserId)
+        public bool Start(string socketName, string remoteProductUserId, float timeout = 25f)
         {
             if (P2P == null || LocalUserId == null)
             {
@@ -72,11 +77,14 @@ namespace FishNet.Transport.EOSNative
             _remoteUserId = ProductUserId.FromString(remoteProductUserId);
             if (_remoteUserId == null || !_remoteUserId.IsValid())
             {
-                EOSDebugLogger.LogError("EOSClient", $" Invalid RemoteProductUserId: {remoteProductUserId}");
+                Debug.LogError($"[EOSClient] Invalid RemoteProductUserId: '{remoteProductUserId}'");
                 return false;
             }
 
             _socketName = socketName;
+            _connectTimeout = timeout;
+            _connectStartTime = Time.realtimeSinceStartup;
+            _connected = false;
 
             // Register for connection established
             var establishedOptions = new AddNotifyPeerConnectionEstablishedOptions
@@ -192,8 +200,10 @@ namespace FishNet.Transport.EOSNative
             if (!_connection.ConnectionOpenedHandled && _connection.IsFullyOpened)
             {
                 _connection.ConnectionOpenedHandled = true;
+                _connected = true;
+                float elapsed = Time.realtimeSinceStartup - _connectStartTime;
+                Debug.Log($"[EOSClient] Connected to server {data.RemoteUserId} in {elapsed:F1}s");
                 _transport.SetClientState(LocalConnectionState.Started);
-                Log($" Connection established with server {data.RemoteUserId}");
             }
         }
 
@@ -207,9 +217,35 @@ namespace FishNet.Transport.EOSNative
             if (!_connection.ConnectionClosedHandled)
             {
                 _connection.ConnectionClosedHandled = true;
+                float elapsed = Time.realtimeSinceStartup - _connectStartTime;
+                Debug.LogWarning($"[EOSClient] Connection closed after {elapsed:F1}s. Reason: {data.Reason}");
                 _transport.SetClientState(LocalConnectionState.Stopped);
-                Log($" Connection closed. Reason: {data.Reason}");
             }
+        }
+
+        /// <summary>
+        /// Check if the client connection has timed out. Call from Update().
+        /// Returns true if timed out and the client was stopped.
+        /// </summary>
+        public bool CheckTimeout()
+        {
+            if (_connected || _connection == null) return false;
+            if (_connectTimeout <= 0) return false;
+
+            float elapsed = Time.realtimeSinceStartup - _connectStartTime;
+            if (elapsed >= _connectTimeout)
+            {
+                Debug.LogError($"[EOSClient] Connection TIMED OUT after {elapsed:F1}s trying to reach {_remoteUserId}. " +
+                    "The host may not have started their server, or EOS P2P relay failed.");
+                if (!_connection.ConnectionClosedHandled)
+                {
+                    _connection.ConnectionClosedHandled = true;
+                    _transport.SetClientState(LocalConnectionState.Stopped);
+                }
+                return true;
+            }
+
+            return false;
         }
 
         #endregion
