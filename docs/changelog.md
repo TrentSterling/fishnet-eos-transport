@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.11.0
+
+- **Robust host migration** -- migration no longer gets stuck in limbo when reconnect fails
+- **Watchdog timer** (45s default, configurable) -- forces migration completion if any step hangs, preventing `IsMigrating` from staying true forever
+- **Failure cleanup** -- on migration failure, stops FishNet and leaves EOS lobby automatically (configurable via `_leaveLobbyOnFailure` / `_stopFishNetOnFailure` inspector toggles)
+- **Expanded reconnect retries** -- 10 attempts over ~36s (was 5 over ~15s), delays: `[1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5, 5, 5]`
+- **Lobby validation** -- checks `IsInLobby` before each reconnect attempt; fails fast with `LobbyMembershipLost` if kicked
+- **Server start failure handling** -- host-side migration now handles `OnServerConnectionState(Stopped)` gracefully instead of hanging
+- **New `OnMigrationFinished(MigrationFinishedArgs)` event** -- detailed result with `MigrationResult` enum (`Success`, `ReconnectFailed`, `ServerStartFailed`, `WatchdogTimeout`, `LobbyMembershipLost`, `Cancelled`), elapsed time, attempt count, and whether we were the new host
+- **`OnMigrationCompleted` preserved** -- still fires for backward compatibility
+- **Public `CancelMigration()` method** + inspector button
+- **`MigrationResult.cs`** -- new file with `MigrationResult` enum and `MigrationFinishedArgs` struct
+- **EOSAutoReconnect migration guard** -- skips auto-reconnect when `HostMigrationManager.IsMigrating` is true, preventing conflicting reconnect attempts
+
 ## v1.10.1
 
 - **Install-order support** -- Transport compiles cleanly without FishNet installed
