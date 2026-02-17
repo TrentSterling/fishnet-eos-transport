@@ -7,6 +7,8 @@ using FishNet.Managing.Object;
 using FishNet.Object;
 using FishNet.Object.Synchronizing;
 using FishNet.Transporting;
+using Epic.OnlineServices;
+using Epic.OnlineServices.P2P;
 using EOSNative;
 using EOSNative.Logging;
 using EOSNative.Lobbies;
@@ -126,7 +128,7 @@ namespace FishNet.Transport.EOSNative.Migration
 
         // Reconnect retry state (for clients during migration)
         private int _reconnectAttempt = 0;
-        private static readonly float[] RECONNECT_DELAYS = { 1.5f, 2f, 2.5f, 3f, 3.5f, 4f, 4.5f, 5f, 5f, 5f };
+        private static readonly float[] RECONNECT_DELAYS = { 0.5f, 1f, 1.5f, 2f, 2.5f, 3f, 3f, 3f, 3f, 3f };
 
         // Watchdog
         private Coroutine _watchdogCoroutine;
@@ -134,6 +136,10 @@ namespace FishNet.Transport.EOSNative.Migration
         // Timing
         private float _migrationStartTime;
         private bool _wasNewHost;
+
+        // P2P pre-accept state
+        private bool _preAcceptedNewHost;
+        private string _preAcceptedPuid;
 
         #endregion
 
@@ -547,6 +553,8 @@ namespace FishNet.Transport.EOSNative.Migration
             _trackedObjects.Clear();
             _migratableObjects.Clear();
             _pendingAutoRepossessions.Clear();
+            _preAcceptedNewHost = false;
+            _preAcceptedPuid = null;
             HostMigratable.ClearPendingRepossessions();
             IsMigrating = false;
             Log("Migration state cleared");
@@ -601,8 +609,9 @@ namespace FishNet.Transport.EOSNative.Migration
         private void OnLobbyOwnerChanged(string newOwnerPuid)
         {
             bool weAreNewHost = LocalPuid == newOwnerPuid;
+            _migrationStartTime = Time.unscaledTime; // Start timing from the moment we detect owner change
 
-            Log($"Owner changed to {newOwnerPuid?.Substring(0, 8)}... (we are new host: {weAreNewHost})");
+            LogTimed($"Owner changed to {newOwnerPuid?.Substring(0, 8)}... (we are new host: {weAreNewHost})");
 
             // Update transport target for reconnection (both host and clients need this)
             if (_transport != null)
@@ -618,8 +627,72 @@ namespace FishNet.Transport.EOSNative.Migration
             }
             else
             {
+                // Pre-accept P2P connection to new host BEFORE tearing down old client.
+                // This tells EOS to start NAT traversal / relay negotiation immediately,
+                // overlapping with the FishNet shutdown/restart cycle.
+                // Critical for Quest/mobile where relay setup can take 5-10s.
+                PreAcceptNewHost(newOwnerPuid);
+
                 // We're a client - need to reconnect to the new host
                 BeginMigrationSequenceAsClient();
+            }
+        }
+
+        /// <summary>
+        /// Pre-accepts a P2P connection to the new host before tearing down the old connection.
+        /// This allows EOS to begin relay/NAT negotiation in parallel with FishNet shutdown.
+        /// </summary>
+        private void PreAcceptNewHost(string newHostPuid)
+        {
+            var p2p = EOSManager.Instance?.P2PInterface;
+            var localUserId = EOSManager.Instance?.LocalProductUserId;
+            if (p2p == null || localUserId == null || string.IsNullOrEmpty(newHostPuid))
+            {
+                LogTimed("Pre-accept skipped: P2P interface or local user not available");
+                return;
+            }
+
+            var remoteUserId = ProductUserId.FromString(newHostPuid);
+            if (remoteUserId == null || !remoteUserId.IsValid())
+            {
+                LogTimed($"Pre-accept skipped: invalid new host PUID {newHostPuid}");
+                return;
+            }
+
+            string socketName = _transport != null ? _transport.SocketName : "FishNetEOS";
+
+            // Accept connection from new host so EOS starts negotiation
+            var acceptOptions = new AcceptConnectionOptions
+            {
+                LocalUserId = localUserId,
+                RemoteUserId = remoteUserId,
+                SocketId = new SocketId { SocketName = socketName }
+            };
+
+            Result acceptResult = p2p.AcceptConnection(ref acceptOptions);
+            LogTimed($"Pre-accept P2P to new host {newHostPuid.Substring(0, 8)}...: {acceptResult}");
+
+            if (acceptResult == Result.Success)
+            {
+                // Send an empty packet to trigger the P2P handshake immediately.
+                // Without this, EOS waits for actual data before starting negotiation.
+                var sendOptions = new SendPacketOptions
+                {
+                    LocalUserId = localUserId,
+                    RemoteUserId = remoteUserId,
+                    SocketId = new SocketId { SocketName = socketName },
+                    Channel = 0,
+                    Data = new ArraySegment<byte>(new byte[] { 0 }),
+                    Reliability = PacketReliability.ReliableOrdered,
+                    AllowDelayedDelivery = true,
+                    DisableAutoAcceptConnection = false
+                };
+
+                Result sendResult = p2p.SendPacket(ref sendOptions);
+                LogTimed($"Pre-accept handshake packet to new host: {sendResult}");
+
+                _preAcceptedNewHost = true;
+                _preAcceptedPuid = newHostPuid;
             }
         }
 
@@ -691,8 +764,10 @@ namespace FishNet.Transport.EOSNative.Migration
             _wasNewHost = true;
             _migrationStartTime = Time.unscaledTime;
             _reconnectAttempt = 0;
+            _preAcceptedNewHost = false;
+            _preAcceptedPuid = null;
             StartWatchdog();
-            Log("Beginning migration sequence as NEW HOST...");
+            LogTimed("Beginning migration sequence as NEW HOST...");
 
             // Step 1: Stop client first
             if (InstanceFinder.IsClientStarted)
@@ -712,7 +787,7 @@ namespace FishNet.Transport.EOSNative.Migration
             if (args.ConnectionState != LocalConnectionState.Stopped) return;
 
             InstanceFinder.ClientManager.OnClientConnectionState -= OnHostClientStopped;
-            Log("Host: Client stopped");
+            LogTimed("Host: Client stopped");
 
             StopOldServer();
         }
@@ -737,7 +812,7 @@ namespace FishNet.Transport.EOSNative.Migration
             if (args.ConnectionState != LocalConnectionState.Stopped) return;
 
             InstanceFinder.ServerManager.OnServerConnectionState -= OnHostServerStopped;
-            Log("Host: Old server stopped");
+            LogTimed("Host: Old server stopped");
 
             StartNewServer();
         }
@@ -750,7 +825,7 @@ namespace FishNet.Transport.EOSNative.Migration
             ResetSceneNetworkObjects();
 
             // Start server as new host
-            Log("Host: Starting server...");
+            LogTimed("Host: Starting server...");
             InstanceFinder.ServerManager.OnServerConnectionState += OnHostServerStarted;
             InstanceFinder.ServerManager.StartConnection();
         }
@@ -807,13 +882,15 @@ namespace FishNet.Transport.EOSNative.Migration
             if (args.ConnectionState == LocalConnectionState.Started)
             {
                 InstanceFinder.ServerManager.OnServerConnectionState -= OnHostServerStarted;
-                Log("Host: Server started");
+                LogTimed("Host: Server started");
 
                 // Step 4: Restore migratable objects
                 MigrationFinish();
+                LogTimed("Host: Objects restored");
 
                 // Step 5: Start client (clienthost)
                 InstanceFinder.ClientManager.StartConnection();
+                LogTimed("Host: ClientHost started");
 
                 // Rebuild observers
                 InstanceFinder.ServerManager.Objects.RebuildObservers();
@@ -823,7 +900,7 @@ namespace FishNet.Transport.EOSNative.Migration
             else if (args.ConnectionState == LocalConnectionState.Stopped)
             {
                 InstanceFinder.ServerManager.OnServerConnectionState -= OnHostServerStarted;
-                Log("Host: Server FAILED to start");
+                LogTimed("Host: Server FAILED to start");
                 CompleteMigration(MigrationResult.ServerStartFailed);
             }
         }
@@ -844,7 +921,7 @@ namespace FishNet.Transport.EOSNative.Migration
             _migrationStartTime = Time.unscaledTime;
             _reconnectAttempt = 0;
             StartWatchdog();
-            Log("Beginning migration sequence as CLIENT...");
+            LogTimed($"Beginning migration sequence as CLIENT (pre-accepted: {_preAcceptedNewHost})...");
             OnMigrationStarted?.Invoke();
 
             // Step 1: Stop client connection
@@ -865,7 +942,7 @@ namespace FishNet.Transport.EOSNative.Migration
             if (args.ConnectionState != LocalConnectionState.Stopped) return;
 
             InstanceFinder.ClientManager.OnClientConnectionState -= OnClientClientStopped;
-            Log("Client: Disconnected from old host");
+            LogTimed("Client: Disconnected from old host");
 
             ScheduleReconnect();
         }
@@ -877,11 +954,13 @@ namespace FishNet.Transport.EOSNative.Migration
         private void ScheduleReconnect()
         {
             _reconnectAttempt = 0;
-            Log("Client: Waiting for new host to be ready...");
 
-            // Start reconnect attempts with increasing delays
-            // First attempt after 1.5s (host needs ~1s to migrate)
-            Invoke(nameof(AttemptReconnect), 1.5f);
+            // If we pre-accepted the new host, P2P negotiation is already underway.
+            // Try sooner since the relay/NAT handshake had a head start.
+            float initialDelay = _preAcceptedNewHost ? 0.5f : 1.5f;
+            LogTimed($"Client: Scheduling first reconnect in {initialDelay}s (pre-accepted: {_preAcceptedNewHost})");
+
+            Invoke(nameof(AttemptReconnect), initialDelay);
         }
 
         private void AttemptReconnect()
@@ -894,19 +973,19 @@ namespace FishNet.Transport.EOSNative.Migration
             // Check lobby membership before wasting a reconnect attempt
             if (_lobbyManager != null && !_lobbyManager.IsInLobby)
             {
-                Log("Client: No longer in lobby — cannot reconnect");
+                LogTimed("Client: No longer in lobby — cannot reconnect");
                 CompleteMigration(MigrationResult.LobbyMembershipLost);
                 return;
             }
 
             if (_reconnectAttempt > _maxReconnectAttempts)
             {
-                Log($"Client: Failed to reconnect after {_maxReconnectAttempts} attempts");
+                LogTimed($"Client: Failed to reconnect after {_maxReconnectAttempts} attempts");
                 CompleteMigration(MigrationResult.ReconnectFailed);
                 return;
             }
 
-            Log($"Client: Reconnect attempt {_reconnectAttempt}/{_maxReconnectAttempts}...");
+            LogTimed($"Client: Reconnect attempt {_reconnectAttempt}/{_maxReconnectAttempts}...");
 
             // Try to start client connection
             InstanceFinder.ClientManager.OnClientConnectionState += OnReconnectResult;
@@ -930,7 +1009,9 @@ namespace FishNet.Transport.EOSNative.Migration
             if (args.ConnectionState == LocalConnectionState.Started)
             {
                 // Success!
-                Log("Client: Successfully reconnected to new host");
+                LogTimed("Client: Successfully reconnected to new host");
+                _preAcceptedNewHost = false;
+                _preAcceptedPuid = null;
                 CompleteMigration(MigrationResult.Success);
             }
             else
@@ -939,7 +1020,7 @@ namespace FishNet.Transport.EOSNative.Migration
                 int delayIndex = Math.Min(_reconnectAttempt, RECONNECT_DELAYS.Length - 1);
                 float delay = RECONNECT_DELAYS[delayIndex];
 
-                Log($"Client: Connection failed, retrying in {delay}s...");
+                LogTimed($"Client: Connection failed, retrying in {delay}s...");
                 Invoke(nameof(AttemptReconnect), delay);
             }
         }
@@ -1132,13 +1213,16 @@ namespace FishNet.Transport.EOSNative.Migration
 
             if (success)
             {
-                Log($"Migration completed SUCCESSFULLY in {elapsed:F1}s (host={_wasNewHost}, attempts={_reconnectAttempt})");
+                LogTimed($"Migration completed SUCCESSFULLY in {elapsed:F1}s (host={_wasNewHost}, attempts={_reconnectAttempt})");
             }
             else
             {
-                Log($"Migration FAILED: {result} after {elapsed:F1}s (host={_wasNewHost}, attempts={_reconnectAttempt})");
+                LogTimed($"Migration FAILED: {result} after {elapsed:F1}s (host={_wasNewHost}, attempts={_reconnectAttempt})");
                 HandleMigrationFailure();
             }
+
+            _preAcceptedNewHost = false;
+            _preAcceptedPuid = null;
 
             // Fire detailed event first, then legacy event for backward compat
             OnMigrationFinished?.Invoke(args);
@@ -1195,7 +1279,7 @@ namespace FishNet.Transport.EOSNative.Migration
 
             if (IsMigrating)
             {
-                Log($"WATCHDOG: Migration exceeded {_watchdogTimeout}s timeout — forcing completion");
+                LogTimed($"WATCHDOG: Migration exceeded {_watchdogTimeout}s timeout — forcing completion");
                 CompleteMigration(MigrationResult.WatchdogTimeout);
             }
 
@@ -1210,6 +1294,18 @@ namespace FishNet.Transport.EOSNative.Migration
         {
             if (!_enableDebugLogs) return;
             EOSDebugLogger.Log(DebugCategory.HostMigrationManager, "HostMigrationManager", message);
+        }
+
+        /// <summary>
+        /// Logs with elapsed time since migration started. Use for migration flow diagnostics.
+        /// Quest users can report these timestamps to identify exactly where delays occur.
+        /// </summary>
+        private void LogTimed(string message)
+        {
+            if (!_enableDebugLogs) return;
+            float elapsed = _migrationStartTime > 0f ? Time.unscaledTime - _migrationStartTime : 0f;
+            EOSDebugLogger.Log(DebugCategory.HostMigrationManager, "HostMigrationManager",
+                $"[T+{elapsed:F2}s] {message}");
         }
 
         #endregion
