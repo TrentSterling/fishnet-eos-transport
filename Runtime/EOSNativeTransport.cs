@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Epic.OnlineServices;
 using Epic.OnlineServices.P2P;
@@ -811,17 +812,17 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success)
             {
-                Debug.Log($"[EOSTransport] Joined lobby {roomCode} (owner: {lobby.OwnerPuid ?? "unknown"})");
+                Debug.Log($"[EOSTransport] Joined lobby {roomCode} (owner: {lobby.OwnerPuid ?? "unknown"}, members: {lobby.MemberCount})");
                 if (autoConnect)
                 {
-                    if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                    if (ValidateHostBeforeConnect(lobby))
                     {
                         RemoteProductUserId = lobby.OwnerPuid;
                         StartClientOnly();
                     }
                     else
                     {
-                        Debug.LogError("[EOSTransport] Joined lobby but host PUID is empty — cannot connect! The host may not have started yet.");
+                        return (Result.NotFound, default);
                     }
                 }
             }
@@ -864,17 +865,17 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success)
             {
-                Debug.Log($"[EOSTransport] Joined lobby by name: {lobbyName} ({lobby.JoinCode}, owner: {lobby.OwnerPuid ?? "unknown"})");
+                Debug.Log($"[EOSTransport] Joined lobby by name: {lobbyName} ({lobby.JoinCode}, owner: {lobby.OwnerPuid ?? "unknown"}, members: {lobby.MemberCount})");
                 if (autoConnect)
                 {
-                    if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                    if (ValidateHostBeforeConnect(lobby))
                     {
                         RemoteProductUserId = lobby.OwnerPuid;
                         StartClientOnly();
                     }
                     else
                     {
-                        Debug.LogError("[EOSTransport] Joined lobby but host PUID is empty — cannot connect!");
+                        return (Result.NotFound, default);
                     }
                 }
             }
@@ -913,15 +914,15 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success)
             {
-                if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                if (ValidateHostBeforeConnect(lobby))
                 {
                     RemoteProductUserId = lobby.OwnerPuid;
                     StartClientOnly();
-                    EOSDebugLogger.Log(DebugCategory.Transport, "EOSNativeTransport", $"QuickMatch: Connected to {lobby.JoinCode}");
+                    Debug.Log($"[EOSTransport] QuickMatch: Connected to {lobby.JoinCode} (host: {lobby.OwnerPuid})");
                 }
                 else
                 {
-                    Debug.LogWarning("[EOSNativeTransport] Joined lobby but host PUID unavailable.");
+                    return (Result.NotFound, default);
                 }
             }
 
@@ -977,7 +978,7 @@ namespace FishNet.Transport.EOSNative
                     Debug.Log($"[EOSTransport] QuickMatch: Hosting {lobby.JoinCode}");
                     StartHost();
                 }
-                else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                else if (ValidateHostBeforeConnect(lobby))
                 {
                     Debug.Log($"[EOSTransport] QuickMatch: Joined {lobby.JoinCode}, connecting to {lobby.OwnerPuid}");
                     RemoteProductUserId = lobby.OwnerPuid;
@@ -985,7 +986,7 @@ namespace FishNet.Transport.EOSNative
                 }
                 else
                 {
-                    Debug.LogError("[EOSTransport] QuickMatch: Joined lobby but host PUID is empty — cannot connect!");
+                    return (Result.NotFound, default, false);
                 }
             }
 
@@ -1043,7 +1044,7 @@ namespace FishNet.Transport.EOSNative
                     Debug.Log($"[EOSTransport] QuickMatch: Hosting {lobby.JoinCode}");
                     StartHost();
                 }
-                else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                else if (ValidateHostBeforeConnect(lobby))
                 {
                     Debug.Log($"[EOSTransport] QuickMatch: Joined {lobby.JoinCode}, connecting to {lobby.OwnerPuid}");
                     RemoteProductUserId = lobby.OwnerPuid;
@@ -1051,7 +1052,7 @@ namespace FishNet.Transport.EOSNative
                 }
                 else
                 {
-                    Debug.LogError("[EOSTransport] QuickMatch: Joined lobby but host PUID is empty — cannot connect!");
+                    return (Result.NotFound, default, false);
                 }
             }
 
@@ -1077,15 +1078,15 @@ namespace FishNet.Transport.EOSNative
 
             if (result == Result.Success)
             {
-                Debug.Log($"[EOSTransport] JoinByGameMode({gameMode}): Joined {lobby.JoinCode}, connecting to {lobby.OwnerPuid ?? "unknown"}");
-                if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+                Debug.Log($"[EOSTransport] JoinByGameMode({gameMode}): Joined {lobby.JoinCode} (owner: {lobby.OwnerPuid ?? "unknown"}, members: {lobby.MemberCount})");
+                if (ValidateHostBeforeConnect(lobby))
                 {
                     RemoteProductUserId = lobby.OwnerPuid;
                     StartClientOnly();
                 }
                 else
                 {
-                    Debug.LogError("[EOSTransport] Joined lobby but host PUID is empty — cannot connect!");
+                    return (Result.NotFound, default);
                 }
             }
 
@@ -1367,16 +1368,42 @@ namespace FishNet.Transport.EOSNative
                 Debug.Log($"[EOSTransport] Auto-starting HOST (lobby owner). Code: {lobby.JoinCode}");
                 StartHost();
             }
-            else if (!string.IsNullOrEmpty(lobby.OwnerPuid))
+            else if (ValidateHostBeforeConnect(lobby))
             {
                 Debug.Log($"[EOSTransport] Auto-starting CLIENT → host {lobby.OwnerPuid}. Code: {lobby.JoinCode}");
                 RemoteProductUserId = lobby.OwnerPuid;
                 StartClientOnly();
             }
-            else
+        }
+
+        /// <summary>
+        /// Validates that a lobby's host is present and reachable before connecting.
+        /// Returns true if safe to connect, false if lobby is stale/ghost.
+        /// </summary>
+        private bool ValidateHostBeforeConnect(LobbyData lobby)
+        {
+            if (lobby.MemberCount <= 0)
             {
-                Debug.LogError($"[EOSTransport] Auto-start FAILED: Lobby joined but OwnerPuid is empty! Code: {lobby.JoinCode}");
+                Debug.LogWarning($"[EOSTransport] Ghost lobby detected (0 members). Code: {lobby.JoinCode}. Leaving.");
+                _ = LobbyManager?.LeaveLobbyAsync();
+                return false;
             }
+
+            if (string.IsNullOrEmpty(lobby.OwnerPuid))
+            {
+                Debug.LogError($"[EOSTransport] Lobby has empty OwnerPuid — cannot connect! Code: {lobby.JoinCode}");
+                return false;
+            }
+
+            var members = LobbyManager?.GetMemberPuids();
+            if (members != null && members.Count > 0 && !members.Any(m => m.ToString() == lobby.OwnerPuid))
+            {
+                Debug.LogWarning($"[EOSTransport] Host {lobby.OwnerPuid} not in member list ({members.Count} members). Lobby stale. Code: {lobby.JoinCode}. Leaving.");
+                _ = LobbyManager?.LeaveLobbyAsync();
+                return false;
+            }
+
+            return true;
         }
 
         #endregion
