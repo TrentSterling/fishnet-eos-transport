@@ -25,6 +25,14 @@ The `FishNetDetector` bootstrap script should add this automatically. If it did 
 
 ## Connection Issues
 
+### Ghost lobby / connecting to dead host
+
+**Symptoms**: Client joins a lobby but FishNet never connects, or connects to a host that's already gone.
+
+**Cause**: EOS lobbies can linger in search results after all players leave ("ghost lobbies"). The eos-sdk package filters ghosts during search, but in rare edge cases a client could join one directly.
+
+**Solution**: Update to v1.13.0+. The transport now validates every lobby before connecting FishNet — checking for 0 members, empty owner PUID, and host not in member list. Invalid lobbies are auto-left.
+
 ### Players cannot connect to the host
 
 1. **Check EOS login** -- Both host and client must be logged into EOS. Look for login success logs in the Console.
@@ -111,8 +119,10 @@ run_health_check(testMode: "Duo")   // Two editors
 
 | Transport | EOS SDK | FishNet | Unity |
 |---|---|---|---|
+| v1.13.0 | v1.6.1 | v4.6+ | 2022.3+ |
+| v1.12.0 | v1.6.0 | v4.6+ | 2022.3+ |
+| v1.11.0 | v1.5.0+ | v4.6+ | 2022.3+ |
 | v1.10.1 | v1.4.6 | v4.6+ | 6000.0+ |
 | v1.10.0 | v1.4.4+ | v4.6+ | 6000.0+ |
-| v1.9.x | v1.4.0+ | v4.5+ | 6000.0+ |
 
 Always use matching versions of the transport and eos-sdk packages for best compatibility. The transport's `package.json` declares its minimum eos-sdk dependency.

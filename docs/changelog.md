@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.13.0
+
+- **Ghost lobby defense at transport level** -- new `ValidateHostBeforeConnect` method checks for ghost lobbies (0 members) and stale hosts (owner PUID not in member list) before connecting FishNet. Auto-leaves invalid lobbies and returns `NotFound` instead of connecting to dead hosts.
+- **ValidateHostBeforeConnect refactor** -- replaces 7 inline `string.IsNullOrEmpty(lobby.OwnerPuid)` checks across `JoinByCode`, `JoinByLobbyName`, `QuickMatch`, `QuickMatchOrHost`, `JoinByGameMode`, and `AutoStartOnLobbyJoin` with a single validation method.
+- **Better join logging** -- all join paths now log member counts alongside owner PUIDs for easier debugging.
+
+## v1.12.0
+
+- **Fix double-start race** -- prevent FishNet from starting twice when lobby join and auto-start overlap
+- **Connection timeout** -- configurable timeout for client connections (default 25s)
+- **Always-on logging** -- transport logs are no longer gated behind debug toggle for critical paths
+
 ## v1.11.0
 
 - **Robust host migration** -- migration no longer gets stuck in limbo when reconnect fails
