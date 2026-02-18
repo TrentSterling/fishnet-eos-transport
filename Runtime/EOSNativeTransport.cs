@@ -1234,12 +1234,22 @@ namespace FishNet.Transport.EOSNative
 
         /// <summary>
         /// Starts only the client connection (via NetworkManager).
+        /// Guards against double-start if a previous client hasn't finished stopping.
         /// </summary>
         public void StartClientOnly()
         {
             var nm = GetComponent<NetworkManager>();
             if (nm == null) nm = FindAnyObjectByType<NetworkManager>();
-            nm?.ClientManager.StartConnection();
+            if (nm == null) return;
+
+            // Double-start guard: if client is still running/stopping, stop it first
+            if (_clientState != LocalConnectionState.Stopped)
+            {
+                Debug.LogWarning($"[EOSTransport] StartClientOnly called while client is {_clientState} — stopping old client first");
+                nm.ClientManager.StopConnection();
+            }
+
+            nm.ClientManager.StartConnection();
         }
 
 
@@ -1425,6 +1435,9 @@ namespace FishNet.Transport.EOSNative
 
         private async Task OnBeforeLeaveLobby()
         {
+            // Notify auto-reconnect that this is an intentional leave (not a crash/disconnect)
+            EOSAutoReconnect.Instance?.NotifyIntentionalLeave();
+
             StopHost();
 
             // Wait for transport to actually reach Stopped state
@@ -1437,6 +1450,21 @@ namespace FishNet.Transport.EOSNative
                 waited += 50;
             }
 
+            // Nuke ALL P2P connections on this socket to prevent stale state on Quest/Android
+            var p2p = EOSManager.Instance?.P2PInterface;
+            var localUser = EOSManager.Instance?.LocalProductUserId;
+            if (p2p != null && localUser != null)
+            {
+                var closeAllOptions = new CloseConnectionsOptions
+                {
+                    LocalUserId = localUser,
+                    SocketId = new SocketId { SocketName = _socketName }
+                };
+                var closeResult = p2p.CloseConnections(ref closeAllOptions);
+                Debug.Log($"[EOSTransport] P2P.CloseConnections({_socketName}): {closeResult}");
+            }
+
+            _remoteProductUserId = null;
             HostMigrationManager.Instance?.ClearMigrationState();
         }
 

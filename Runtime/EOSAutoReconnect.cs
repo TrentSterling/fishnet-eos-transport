@@ -163,6 +163,7 @@ namespace FishNet.Transport.EOSNative
         private string _lastLobbyCode;
         private bool _wasConnected;
         private bool _isReconnecting;
+        private bool _intentionalLeave;
         private int _currentAttempt;
         private Coroutine _reconnectCoroutine;
         private ReconnectSessionData _localSession;
@@ -243,6 +244,15 @@ namespace FishNet.Transport.EOSNative
                 // Disconnected
                 if (_enabled && _wasConnected && !_isReconnecting)
                 {
+                    // Skip auto-reconnect if this was an intentional leave
+                    if (_intentionalLeave)
+                    {
+                        Debug.Log("[EOSAutoReconnect] Skipping auto-reconnect — intentional leave");
+                        _intentionalLeave = false;
+                        _wasConnected = false;
+                        return;
+                    }
+
                     // Skip auto-reconnect if HostMigrationManager is handling the reconnect
                     var migrationManager = HostMigrationManager.Instance;
                     if (migrationManager != null && migrationManager.IsMigrating)
@@ -450,6 +460,20 @@ namespace FishNet.Transport.EOSNative
             {
                 EOSToastManager.Info("Reconnect Cancelled", "");
             }
+        }
+
+        /// <summary>
+        /// Notify that the player is intentionally leaving the lobby.
+        /// Suppresses auto-reconnect, clears saved lobby code, and cancels any active reconnect.
+        /// Called by EOSNativeTransport.OnBeforeLeaveLobby().
+        /// </summary>
+        public void NotifyIntentionalLeave()
+        {
+            _intentionalLeave = true;
+            _wasConnected = false;
+            _lastLobbyCode = null;
+            CancelReconnect();
+            Debug.Log("[EOSAutoReconnect] Intentional leave — auto-reconnect suppressed");
         }
 
         /// <summary>
